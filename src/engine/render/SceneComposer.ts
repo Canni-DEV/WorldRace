@@ -17,6 +17,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import type { GeoBoundsMeters } from '../geo/GeoBounds';
+import type { TileCoordinate } from '../geo/TileSystem';
 import type { BuildingTileMeshPayload } from '../world/BuildingMeshTypes';
 import type { RoadTileMeshPayload } from '../world/RoadMeshTypes';
 
@@ -35,6 +36,7 @@ interface BuildingTileBundle {
   readonly lod1Geometry: BufferGeometry;
   readonly lod0Mesh: Mesh;
   readonly lod1Mesh: Mesh;
+  readonly tileCoordinate: TileCoordinate | null;
   readonly centerEast: number;
   readonly centerNorth: number;
   lodState: 'lod0' | 'lod1';
@@ -88,21 +90,16 @@ export class SceneComposer {
     depthWrite: false,
   });
   private readonly roadDebugLineMaterial = new LineBasicMaterial({ color: 0xf59e0b });
-  private readonly buildingLod0Material = new MeshStandardMaterial({
+  private readonly buildingMaterial = new MeshStandardMaterial({
     color: 0x4b5563,
     roughness: 0.92,
     metalness: 0.04,
     side: DoubleSide,
   });
-  private readonly buildingLod1Material = new MeshStandardMaterial({
-    color: 0x334155,
-    roughness: 0.98,
-    metalness: 0.01,
-    side: DoubleSide,
-  });
   private roadDebugVisible = false;
   private worldOffsetEast = 0;
   private worldOffsetNorth = 0;
+  private currentTileCoordinate: TileCoordinate | null = null;
   private readonly buildingLodNearDistanceMeters = 220;
   private readonly buildingLodHysteresisMeters = 24;
 
@@ -171,6 +168,10 @@ export class SceneComposer {
     this.worldOffsetNorth = offsetNorth;
     this.roadRoot.position.set(-offsetEast, 0, -offsetNorth);
     this.buildingRoot.position.set(-offsetEast, 0, -offsetNorth);
+  }
+
+  public setCurrentTileCoordinate(tile: TileCoordinate): void {
+    this.currentTileCoordinate = tile;
   }
 
   public setRoadDebugOverlayEnabled(enabled: boolean): void {
@@ -244,12 +245,12 @@ export class SceneComposer {
 
     const lod0Geometry = this.createIndexedGeometry(tileMesh.lod0Positions, tileMesh.lod0Indices);
     const lod1Geometry = this.createIndexedGeometry(tileMesh.lod1Positions, tileMesh.lod1Indices);
-    const lod0Mesh = new Mesh(lod0Geometry, this.buildingLod0Material);
+    const lod0Mesh = new Mesh(lod0Geometry, this.buildingMaterial);
     lod0Mesh.name = 'building-lod0';
     lod0Mesh.castShadow = false;
     lod0Mesh.receiveShadow = true;
 
-    const lod1Mesh = new Mesh(lod1Geometry, this.buildingLod1Material);
+    const lod1Mesh = new Mesh(lod1Geometry, this.buildingMaterial);
     lod1Mesh.name = 'building-lod1';
     lod1Mesh.castShadow = false;
     lod1Mesh.receiveShadow = true;
@@ -266,11 +267,12 @@ export class SceneComposer {
       lod1Geometry,
       lod0Mesh,
       lod1Mesh,
+      tileCoordinate: this.parseTileCoordinateFromKey(tileMesh.tileKey),
       centerEast: tileMesh.tileCenter.east,
       centerNorth: tileMesh.tileCenter.north,
       lodState: 'lod0',
     };
-    this.applyBuildingLod(bundle, 'lod0');
+    this.applyBuildingLod(bundle, this.resolveTargetLod(bundle));
     this.buildingTileBundles.set(tileMesh.tileKey, bundle);
   }
 
@@ -294,8 +296,7 @@ export class SceneComposer {
     this.roadWireframeMaterial.dispose();
     this.roadCollisionMaterial.dispose();
     this.roadDebugLineMaterial.dispose();
-    this.buildingLod0Material.dispose();
-    this.buildingLod1Material.dispose();
+    this.buildingMaterial.dispose();
 
     this.renderer.dispose();
     this.renderer.domElement.remove();
@@ -444,31 +445,54 @@ export class SceneComposer {
       return;
     }
 
+    for (const bundle of this.buildingTileBundles.values()) {
+      const targetLod = this.resolveTargetLod(bundle);
+      if (targetLod !== bundle.lodState) {
+        this.applyBuildingLod(bundle, targetLod);
+      }
+    }
+  }
+
+  private resolveTargetLod(bundle: BuildingTileBundle): 'lod0' | 'lod1' {
+    const focusTile = this.currentTileCoordinate;
+    const bundleTile = bundle.tileCoordinate;
+    if (focusTile !== null && bundleTile !== null) {
+      const deltaX = Math.abs(bundleTile.x - focusTile.x);
+      const deltaY = Math.abs(bundleTile.y - focusTile.y);
+      const chebyshevDistance = Math.max(deltaX, deltaY);
+      return chebyshevDistance <= 1 ? 'lod0' : 'lod1';
+    }
+
     const nearDistance = this.buildingLodNearDistanceMeters;
     const hysteresis = this.buildingLodHysteresisMeters;
-    const nearDistanceSq = nearDistance * nearDistance;
     const nearEnterSq = Math.max(0, nearDistance - hysteresis) ** 2;
     const nearExitSq = (nearDistance + hysteresis) ** 2;
     const cameraPosition = this.camera.position;
+    const centerX = bundle.centerEast - this.worldOffsetEast;
+    const centerZ = bundle.centerNorth - this.worldOffsetNorth;
+    const deltaX = centerX - cameraPosition.x;
+    const deltaZ = centerZ - cameraPosition.z;
+    const distanceSq = deltaX * deltaX + deltaZ * deltaZ;
 
-    for (const bundle of this.buildingTileBundles.values()) {
-      const centerX = bundle.centerEast - this.worldOffsetEast;
-      const centerZ = bundle.centerNorth - this.worldOffsetNorth;
-      const deltaX = centerX - cameraPosition.x;
-      const deltaZ = centerZ - cameraPosition.z;
-      const distanceSq = deltaX * deltaX + deltaZ * deltaZ;
-
-      if (bundle.lodState === 'lod0') {
-        if (distanceSq > nearExitSq) {
-          this.applyBuildingLod(bundle, 'lod1');
-        }
-        continue;
-      }
-
-      if (distanceSq < nearEnterSq || distanceSq <= nearDistanceSq) {
-        this.applyBuildingLod(bundle, 'lod0');
-      }
+    if (bundle.lodState === 'lod0') {
+      return distanceSq > nearExitSq ? 'lod1' : 'lod0';
     }
+    return distanceSq < nearEnterSq ? 'lod0' : 'lod1';
+  }
+
+  private parseTileCoordinateFromKey(tileKey: string): TileCoordinate | null {
+    const parts = tileKey.split(':');
+    if (parts.length !== 2) {
+      return null;
+    }
+
+    const x = Number.parseInt(parts[0] ?? '', 10);
+    const y = Number.parseInt(parts[1] ?? '', 10);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return null;
+    }
+
+    return { x, y };
   }
 
   private applyBuildingLod(bundle: BuildingTileBundle, targetLod: 'lod0' | 'lod1'): void {

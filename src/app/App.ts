@@ -164,6 +164,7 @@ export class App {
       const streamSnapshot = this.worldStream.getSnapshot();
       this.cacheMetrics = this.tileDataService.getMetricsSnapshot();
       this.sceneComposer.setWorldOffset(this.globalOffsetMeters.east, this.globalOffsetMeters.north);
+      this.sceneComposer.setCurrentTileCoordinate(spatialState.currentTile);
       this.sceneComposer.updateTileDebugGrid(spatialState.tileDebugGridData);
       this.sceneComposer.render();
 

@@ -29,6 +29,8 @@ const defaultConfig: BuildingMesherConfig = {
   roofGableHeightMeters: 2.25,
 };
 
+const LOD1_COLINEAR_TOLERANCE_METERS = 0.08;
+
 export class BuildingMesher {
   private readonly config: BuildingMesherConfig;
 
@@ -59,20 +61,22 @@ export class BuildingMesher {
 
     for (const building of tileData.buildings) {
       const buildingHeight = this.resolveHeightMeters(building);
-      const bounds = this.createEmptyBounds();
-      let hasAnyPolygon = false;
+      let hasLod0Geometry = false;
+      let hasLod1Geometry = false;
 
       for (const polygon of building.polygons) {
-        const outer = this.toOpenRing(polygon.outer);
+        const outer = this.offsetRingToGlobal(
+          this.toOpenRing(polygon.outer),
+          tileData.tileOriginGlobalMeters,
+        );
         if (outer.length < 3) {
           stats.droppedPolygons += 1;
           continue;
         }
 
         const holes = polygon.holes
-          .map((hole) => this.toOpenRing(hole))
+          .map((hole) => this.offsetRingToGlobal(this.toOpenRing(hole), tileData.tileOriginGlobalMeters))
           .filter((hole) => hole.length >= 3);
-        this.extendBoundsWithPoints(bounds, outer);
         const appended = this.appendLod0BuildingPolygon(
           outer,
           holes,
@@ -85,16 +89,27 @@ export class BuildingMesher {
           stats.droppedPolygons += 1;
           continue;
         }
-        hasAnyPolygon = true;
+
+        const simplifiedOuter = this.simplifyLod1Ring(outer);
+        const lod1Outer =
+          simplifiedOuter.length >= 3
+            ? this.ensureWinding(simplifiedOuter, true)
+            : this.ensureWinding(outer, true);
+        if (lod1Outer.length >= 3) {
+          this.appendLod1BuildingPolygon(lod1Outer, buildingHeight, lod1Positions, lod1Indices);
+          hasLod1Geometry = true;
+        }
+        hasLod0Geometry = true;
       }
 
-      if (!hasAnyPolygon || !this.isValidBounds(bounds)) {
+      if (!hasLod0Geometry) {
         continue;
       }
 
       stats.lod0Buildings += 1;
-      this.appendLod1BoundingBox(bounds, buildingHeight, lod1Positions, lod1Indices);
-      stats.lod1Buildings += 1;
+      if (hasLod1Geometry) {
+        stats.lod1Buildings += 1;
+      }
     }
 
     stats.lod0TriangleCount = Math.floor(lod0Indices.length / 3);
@@ -277,6 +292,16 @@ export class BuildingMesher {
     this.appendTriangle(indices, c2, ridgeB, c3);
   }
 
+  private appendLod1BuildingPolygon(
+    outerRing: readonly PointMeters[],
+    heightMeters: number,
+    positions: number[],
+    indices: number[],
+  ): void {
+    this.appendWallsForRing(outerRing, heightMeters, positions, indices);
+    this.appendFlatRoof(outerRing, [], heightMeters, positions, indices);
+  }
+
   private appendWallsForRing(
     ring: readonly PointMeters[],
     heightMeters: number,
@@ -314,67 +339,6 @@ export class BuildingMesher {
       this.appendTriangle(indices, baseVertex + 0, baseVertex + 2, baseVertex + 1);
       this.appendTriangle(indices, baseVertex + 1, baseVertex + 2, baseVertex + 3);
     }
-  }
-
-  private appendLod1BoundingBox(
-    bounds: MutableBounds,
-    heightMeters: number,
-    positions: number[],
-    indices: number[],
-  ): void {
-    const baseVertex = Math.floor(positions.length / 3);
-    const x0 = bounds.minEast;
-    const x1 = bounds.maxEast;
-    const z0 = bounds.minNorth;
-    const z1 = bounds.maxNorth;
-    const y0 = 0;
-    const y1 = heightMeters;
-
-    positions.push(
-      x0,
-      y0,
-      z0,
-      x1,
-      y0,
-      z0,
-      x1,
-      y0,
-      z1,
-      x0,
-      y0,
-      z1,
-      x0,
-      y1,
-      z0,
-      x1,
-      y1,
-      z0,
-      x1,
-      y1,
-      z1,
-      x0,
-      y1,
-      z1,
-    );
-
-    this.appendBoxFace(indices, baseVertex, 0, 1, 5, 4);
-    this.appendBoxFace(indices, baseVertex, 1, 2, 6, 5);
-    this.appendBoxFace(indices, baseVertex, 2, 3, 7, 6);
-    this.appendBoxFace(indices, baseVertex, 3, 0, 4, 7);
-    this.appendBoxFace(indices, baseVertex, 4, 5, 6, 7);
-    this.appendBoxFace(indices, baseVertex, 0, 3, 2, 1);
-  }
-
-  private appendBoxFace(
-    indices: number[],
-    baseVertex: number,
-    vertexA: number,
-    vertexB: number,
-    vertexC: number,
-    vertexD: number,
-  ): void {
-    this.appendTriangle(indices, baseVertex + vertexA, baseVertex + vertexB, baseVertex + vertexC);
-    this.appendTriangle(indices, baseVertex + vertexA, baseVertex + vertexC, baseVertex + vertexD);
   }
 
   private appendUpwardTriangle(
@@ -465,6 +429,61 @@ export class BuildingMesher {
       return ring.slice(0, ring.length - 1);
     }
     return [...ring];
+  }
+
+  private offsetRingToGlobal(
+    ring: readonly PointMeters[],
+    tileOrigin: { readonly east: number; readonly north: number },
+  ): PointMeters[] {
+    return ring.map((point) => ({
+      east: point.east + tileOrigin.east,
+      north: point.north + tileOrigin.north,
+    }));
+  }
+
+  private simplifyLod1Ring(ring: readonly PointMeters[]): PointMeters[] {
+    if (ring.length <= 4) {
+      return [...ring];
+    }
+
+    const simplified: PointMeters[] = [];
+    const pointCount = ring.length;
+    for (let index = 0; index < pointCount; index += 1) {
+      const previous = ring[(index - 1 + pointCount) % pointCount];
+      const current = ring[index];
+      const next = ring[(index + 1) % pointCount];
+      if (previous === undefined || current === undefined || next === undefined) {
+        continue;
+      }
+
+      const distance = this.distanceToSegmentMeters(current, previous, next);
+      if (distance <= LOD1_COLINEAR_TOLERANCE_METERS && simplified.length >= 3) {
+        continue;
+      }
+      simplified.push(current);
+    }
+
+    return simplified.length >= 3 ? simplified : [...ring];
+  }
+
+  private distanceToSegmentMeters(point: PointMeters, segmentStart: PointMeters, segmentEnd: PointMeters): number {
+    const dx = segmentEnd.east - segmentStart.east;
+    const dz = segmentEnd.north - segmentStart.north;
+    const lengthSq = dx * dx + dz * dz;
+    if (lengthSq <= Number.EPSILON) {
+      const px = point.east - segmentStart.east;
+      const pz = point.north - segmentStart.north;
+      return Math.sqrt(px * px + pz * pz);
+    }
+
+    const projection =
+      ((point.east - segmentStart.east) * dx + (point.north - segmentStart.north) * dz) / lengthSq;
+    const clamped = Math.max(0, Math.min(1, projection));
+    const nearestEast = segmentStart.east + dx * clamped;
+    const nearestNorth = segmentStart.north + dz * clamped;
+    const deltaEast = point.east - nearestEast;
+    const deltaNorth = point.north - nearestNorth;
+    return Math.sqrt(deltaEast * deltaEast + deltaNorth * deltaNorth);
   }
 
   private createEmptyBounds(): MutableBounds {

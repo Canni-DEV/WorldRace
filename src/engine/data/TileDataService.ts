@@ -19,10 +19,13 @@ import type {
   TileOSMData,
 } from './Types';
 
-const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v6';
+const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v8';
 const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-meta-v3';
-const META_TILE_SCHEMA_VERSION = 'meta-tile-v3';
+const META_TILE_SCHEMA_VERSION = 'meta-tile-v5';
 const STATS_REFRESH_INTERVAL_MS = 2500;
+const POLYGON_POINT_EPSILON_METERS = 0.01;
+const RELATION_RING_SNAP_TOLERANCE_METERS = 0.35;
+const WAY_RING_CLOSING_TOLERANCE_METERS = 0.35;
 
 type OverpassWayElement = Extract<OverpassResponse['elements'][number], { type: 'way' }>;
 type OverpassRelationElement = Extract<OverpassResponse['elements'][number], { type: 'relation' }>;
@@ -421,6 +424,28 @@ export class TileDataService {
       }
     }
 
+    const buildingRelationMemberWayIds = new Set<number>();
+    for (const element of payload.elements) {
+      if (element.type !== 'relation' || !this.isBuildingRelation(element)) {
+        continue;
+      }
+
+      const relationPolygons = this.extractRelationPolygons(element, waysById);
+      if (relationPolygons.length === 0) {
+        continue;
+      }
+
+      for (const wayId of this.collectBuildingRelationWayIds(element)) {
+        buildingRelationMemberWayIds.add(wayId);
+      }
+
+      buildings.push({
+        id: `relation/${element.id}`,
+        polygons: relationPolygons,
+        properties: this.parseBuildingProperties(element.tags),
+      });
+    }
+
     for (const element of payload.elements) {
       if (element.type !== 'way') {
         continue;
@@ -447,7 +472,11 @@ export class TileDataService {
         continue;
       }
 
-      const outer = this.sanitizePolygonRing(geometry);
+      if (buildingRelationMemberWayIds.has(way.id)) {
+        continue;
+      }
+
+      const outer = this.sanitizePolygonRing(geometry, WAY_RING_CLOSING_TOLERANCE_METERS);
       if (outer === null) {
         continue;
       }
@@ -461,23 +490,6 @@ export class TileDataService {
           },
         ],
         properties: this.parseBuildingProperties(way.tags),
-      });
-    }
-
-    for (const element of payload.elements) {
-      if (element.type !== 'relation' || !this.isBuildingRelation(element)) {
-        continue;
-      }
-
-      const relationPolygons = this.extractRelationPolygons(element, waysById);
-      if (relationPolygons.length === 0) {
-        continue;
-      }
-
-      buildings.push({
-        id: `relation/${element.id}`,
-        polygons: relationPolygons,
-        properties: this.parseBuildingProperties(element.tags),
       });
     }
 
@@ -534,6 +546,15 @@ export class TileDataService {
       const localPolygons: BuildingPolygon[] = [];
       for (const polygon of building.polygons) {
         if (!this.polygonBoundsIntersects(polygon.outer, expandedBounds)) {
+          continue;
+        }
+        if (
+          !this.isPolygonOwnedByTile(
+            polygon.outer,
+            params.tileCoordinate,
+            params.tileSizeMeters,
+          )
+        ) {
           continue;
         }
 
@@ -757,8 +778,8 @@ export class TileDataService {
     relation: OverpassRelationElement,
     waysById: Map<number, OverpassWayElement>,
   ): BuildingPolygon[] {
-    const outerRings: PointMeters[][] = [];
-    const holeRings: PointMeters[][] = [];
+    const outerSegments: PointMeters[][] = [];
+    const holeSegments: PointMeters[][] = [];
 
     for (const member of relation.members ?? []) {
       if (member.type !== 'way') {
@@ -775,21 +796,23 @@ export class TileDataService {
         continue;
       }
 
-      const ring = this.sanitizePolygonRing(this.normalizeGeometryToGlobal(geometry));
-      if (ring === null) {
+      const segment = this.sanitizeRelationMemberSegment(this.normalizeGeometryToGlobal(geometry));
+      if (segment === null) {
         continue;
       }
 
       if (role === 'outer') {
-        outerRings.push(ring);
+        outerSegments.push(segment);
       } else {
-        holeRings.push(ring);
+        holeSegments.push(segment);
       }
     }
 
+    const outerRings = this.assembleRelationRings(outerSegments);
     if (outerRings.length === 0) {
       return [];
     }
+    const holeRings = this.assembleRelationRings(holeSegments);
 
     const polygons: { outer: PointMeters[]; holes: PointMeters[][] }[] = outerRings.map((outer) => ({
       outer,
@@ -825,19 +848,166 @@ export class TileDataService {
     }));
   }
 
-  private sanitizePolygonRing(points: readonly PointMeters[]): PointMeters[] | null {
-    if (points.length < 3) {
+  private collectBuildingRelationWayIds(relation: OverpassRelationElement): number[] {
+    const wayIds: number[] = [];
+    for (const member of relation.members ?? []) {
+      if (member.type !== 'way') {
+        continue;
+      }
+
+      const role = member.role.trim().toLowerCase();
+      if (role !== 'outer' && role !== 'inner') {
+        continue;
+      }
+      wayIds.push(member.ref);
+    }
+    return wayIds;
+  }
+
+  private sanitizeRelationMemberSegment(points: readonly PointMeters[]): PointMeters[] | null {
+    if (points.length < 2) {
       return null;
     }
 
+    const compact = this.collapseConsecutivePoints(points, POLYGON_POINT_EPSILON_METERS);
+    if (compact.length < 2) {
+      return null;
+    }
+
+    const first = compact[0];
+    const last = compact[compact.length - 1];
+    if (first !== undefined && last !== undefined && this.pointsNear(first, last, POLYGON_POINT_EPSILON_METERS)) {
+      compact.pop();
+    }
+
+    return compact.length >= 2 ? compact : null;
+  }
+
+  private assembleRelationRings(segments: readonly (readonly PointMeters[])[]): PointMeters[][] {
+    const remaining = segments
+      .map((segment) => this.collapseConsecutivePoints(segment, POLYGON_POINT_EPSILON_METERS))
+      .filter((segment) => segment.length >= 2)
+      .map((segment) => [...segment]);
+    const rings: PointMeters[][] = [];
+
+    while (remaining.length > 0) {
+      const currentPath = remaining.pop();
+      if (currentPath === undefined || currentPath.length < 2) {
+        continue;
+      }
+
+      let path = [...currentPath];
+      let merged = true;
+      while (merged) {
+        merged = false;
+
+        if (this.isPathClosed(path, RELATION_RING_SNAP_TOLERANCE_METERS)) {
+          const ring = this.sanitizePolygonRing(path, RELATION_RING_SNAP_TOLERANCE_METERS);
+          if (ring !== null) {
+            rings.push(ring);
+          }
+          path = [];
+          break;
+        }
+
+        for (let index = 0; index < remaining.length; index += 1) {
+          const candidate = remaining[index];
+          if (candidate === undefined) {
+            continue;
+          }
+
+          const mergedPath = this.tryMergeRelationPaths(path, candidate);
+          if (mergedPath === null) {
+            continue;
+          }
+
+          remaining.splice(index, 1);
+          path = this.collapseConsecutivePoints(mergedPath, POLYGON_POINT_EPSILON_METERS);
+          merged = true;
+          break;
+        }
+      }
+
+      if (path.length > 0 && this.isPathClosed(path, RELATION_RING_SNAP_TOLERANCE_METERS)) {
+        const ring = this.sanitizePolygonRing(path, RELATION_RING_SNAP_TOLERANCE_METERS);
+        if (ring !== null) {
+          rings.push(ring);
+        }
+      }
+    }
+
+    return rings;
+  }
+
+  private tryMergeRelationPaths(
+    path: readonly PointMeters[],
+    candidate: readonly PointMeters[],
+  ): PointMeters[] | null {
+    const pathStart = path[0];
+    const pathEnd = path[path.length - 1];
+    const candidateStart = candidate[0];
+    const candidateEnd = candidate[candidate.length - 1];
+    if (pathStart === undefined || pathEnd === undefined || candidateStart === undefined || candidateEnd === undefined) {
+      return null;
+    }
+
+    if (this.pointsNear(pathEnd, candidateStart, RELATION_RING_SNAP_TOLERANCE_METERS)) {
+      return [...path, ...candidate.slice(1)];
+    }
+
+    if (this.pointsNear(pathEnd, candidateEnd, RELATION_RING_SNAP_TOLERANCE_METERS)) {
+      const reversed = [...candidate].reverse();
+      return [...path, ...reversed.slice(1)];
+    }
+
+    if (this.pointsNear(pathStart, candidateEnd, RELATION_RING_SNAP_TOLERANCE_METERS)) {
+      return [...candidate.slice(0, candidate.length - 1), ...path];
+    }
+
+    if (this.pointsNear(pathStart, candidateStart, RELATION_RING_SNAP_TOLERANCE_METERS)) {
+      const reversed = [...candidate].reverse();
+      return [...reversed.slice(0, reversed.length - 1), ...path];
+    }
+
+    return null;
+  }
+
+  private isPathClosed(points: readonly PointMeters[], epsilonMeters: number): boolean {
+    if (points.length < 3) {
+      return false;
+    }
+    const first = points[0];
+    const last = points[points.length - 1];
+    if (first === undefined || last === undefined) {
+      return false;
+    }
+    return this.pointsNear(first, last, epsilonMeters);
+  }
+
+  private collapseConsecutivePoints(
+    points: readonly PointMeters[],
+    epsilonMeters: number,
+  ): PointMeters[] {
     const compact: PointMeters[] = [];
     for (const point of points) {
       const previous = compact[compact.length - 1];
-      if (previous !== undefined && this.pointsNear(previous, point, 0.01)) {
+      if (previous !== undefined && this.pointsNear(previous, point, epsilonMeters)) {
         continue;
       }
       compact.push(point);
     }
+    return compact;
+  }
+
+  private sanitizePolygonRing(
+    points: readonly PointMeters[],
+    closingToleranceMeters: number = POLYGON_POINT_EPSILON_METERS,
+  ): PointMeters[] | null {
+    if (points.length < 3) {
+      return null;
+    }
+
+    const compact = this.collapseConsecutivePoints(points, POLYGON_POINT_EPSILON_METERS);
 
     if (compact.length < 3) {
       return null;
@@ -845,9 +1015,10 @@ export class TileDataService {
 
     const first = compact[0];
     const last = compact[compact.length - 1];
-    if (first !== undefined && last !== undefined && this.pointsNear(first, last, 0.01)) {
-      compact.pop();
+    if (first === undefined || last === undefined || !this.pointsNear(first, last, closingToleranceMeters)) {
+      return null;
     }
+    compact.pop();
 
     if (compact.length < 3) {
       return null;
@@ -859,6 +1030,70 @@ export class TileDataService {
       return null;
     }
     return closed;
+  }
+
+  private isPolygonOwnedByTile(
+    polygonOuter: readonly PointMeters[],
+    tileCoordinate: { readonly x: number; readonly y: number },
+    tileSizeMeters: number,
+  ): boolean {
+    const centroid = this.computePolygonCentroid(polygonOuter);
+    if (centroid === null) {
+      return false;
+    }
+    const ownerTileX = Math.floor(centroid.east / tileSizeMeters);
+    const ownerTileY = Math.floor(centroid.north / tileSizeMeters);
+    return ownerTileX === tileCoordinate.x && ownerTileY === tileCoordinate.y;
+  }
+
+  private computePolygonCentroid(ring: readonly PointMeters[]): PointMeters | null {
+    if (ring.length < 4) {
+      return null;
+    }
+
+    let area2 = 0;
+    let centroidEastAcc = 0;
+    let centroidNorthAcc = 0;
+    for (let index = 0; index < ring.length - 1; index += 1) {
+      const current = ring[index];
+      const next = ring[index + 1];
+      if (current === undefined || next === undefined) {
+        continue;
+      }
+
+      const cross = current.east * next.north - next.east * current.north;
+      area2 += cross;
+      centroidEastAcc += (current.east + next.east) * cross;
+      centroidNorthAcc += (current.north + next.north) * cross;
+    }
+
+    if (Math.abs(area2) <= 1e-9) {
+      let pointCount = 0;
+      let eastSum = 0;
+      let northSum = 0;
+      for (let index = 0; index < ring.length - 1; index += 1) {
+        const point = ring[index];
+        if (point === undefined) {
+          continue;
+        }
+        eastSum += point.east;
+        northSum += point.north;
+        pointCount += 1;
+      }
+      if (pointCount === 0) {
+        return null;
+      }
+      return {
+        east: eastSum / pointCount,
+        north: northSum / pointCount,
+      };
+    }
+
+    const scale = 1 / (3 * area2);
+    return {
+      east: centroidEastAcc * scale,
+      north: centroidNorthAcc * scale,
+    };
   }
 
   private pointsNear(pointA: PointMeters, pointB: PointMeters, epsilonMeters: number): boolean {
