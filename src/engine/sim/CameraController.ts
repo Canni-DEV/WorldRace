@@ -103,7 +103,7 @@ export class CameraController {
 
     const forwardInput = this.readAxis(['KeyW', 'ArrowUp'], ['KeyS', 'ArrowDown']);
     const strafeInput = this.readAxis(['KeyD', 'ArrowRight'], ['KeyA', 'ArrowLeft']);
-    const verticalInput = this.readAxis(['Space', 'KeyE'], ['ControlLeft', 'ControlRight', 'KeyQ']);
+    const verticalInput = this.readAxis(['Space', 'KeyE'], ['KeyQ', 'KeyC']);
     const hasInput = forwardInput !== 0 || strafeInput !== 0 || verticalInput !== 0;
 
     if (hasInput) {
