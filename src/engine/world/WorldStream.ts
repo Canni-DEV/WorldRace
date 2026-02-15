@@ -39,7 +39,10 @@ interface LoadedTileEntry {
 
 export interface WorldStreamConfig {
   readonly maxConcurrentLoads: number;
+  readonly maxConcurrentFetches: number;
   readonly useBuildWorker: boolean;
+  readonly prefetchRequestIntervalMs: number;
+  readonly prefetchFocusDelayMs: number;
 }
 
 export interface WorldStreamCurrentTileSnapshot {
@@ -82,8 +85,11 @@ interface WorldStreamDependencies {
 }
 
 const defaultConfig: WorldStreamConfig = {
-  maxConcurrentLoads: 3,
+  maxConcurrentLoads: 2,
+  maxConcurrentFetches: 1,
   useBuildWorker: true,
+  prefetchRequestIntervalMs: 650,
+  prefetchFocusDelayMs: 250,
 };
 
 export class WorldStream {
@@ -94,6 +100,9 @@ export class WorldStream {
   private readonly createTileFetchParams: (tile: TileCoordinate, tileKey: string) => TileFetchParams;
   private readonly buildService: RoadMeshBuildService;
   private readonly maxConcurrentLoads: number;
+  private readonly maxConcurrentFetches: number;
+  private readonly prefetchRequestIntervalMs: number;
+  private readonly prefetchFocusDelayMs: number;
 
   private readonly desiredByKey = new Map<string, DesiredTileEntry>();
   private readonly pendingByKey = new Map<string, DesiredTileEntry>();
@@ -108,6 +117,8 @@ export class WorldStream {
   private lastFetchMs = 0;
   private lastBuildMs = 0;
   private approxMeshBytes = 0;
+  private focusTileChangedAtMs = performance.now();
+  private lastPrefetchDispatchAtMs = Number.NEGATIVE_INFINITY;
   private disposed = false;
 
   public constructor(
@@ -123,6 +134,18 @@ export class WorldStream {
       1,
       Math.floor(config.maxConcurrentLoads ?? defaultConfig.maxConcurrentLoads),
     );
+    this.maxConcurrentFetches = Math.max(
+      1,
+      Math.floor(config.maxConcurrentFetches ?? defaultConfig.maxConcurrentFetches),
+    );
+    this.prefetchRequestIntervalMs = Math.max(
+      0,
+      config.prefetchRequestIntervalMs ?? defaultConfig.prefetchRequestIntervalMs,
+    );
+    this.prefetchFocusDelayMs = Math.max(
+      0,
+      config.prefetchFocusDelayMs ?? defaultConfig.prefetchFocusDelayMs,
+    );
     this.buildService = new RoadMeshBuildService({
       useWorker: config.useBuildWorker ?? defaultConfig.useBuildWorker,
     });
@@ -133,7 +156,11 @@ export class WorldStream {
       return;
     }
 
-    this.currentTileKey = this.tileSystem.getTileKey(currentTile);
+    const nextCurrentTileKey = this.tileSystem.getTileKey(currentTile);
+    if (nextCurrentTileKey !== this.currentTileKey) {
+      this.focusTileChangedAtMs = performance.now();
+    }
+    this.currentTileKey = nextCurrentTileKey;
     this.reconcileDesiredTiles(currentTile, tileRings);
     this.unloadTilesOutsideDesiredSet();
     this.enqueueMissingTiles();
@@ -227,10 +254,15 @@ export class WorldStream {
       this.desiredByKey.set(tileKey, entry);
     }
 
-    for (const pendingKey of [...this.pendingByKey.keys()]) {
-      if (!this.desiredByKey.has(pendingKey)) {
+    for (const [pendingKey] of [...this.pendingByKey.entries()]) {
+      const desired = this.desiredByKey.get(pendingKey);
+      if (desired === undefined) {
         this.pendingByKey.delete(pendingKey);
+        continue;
       }
+
+      // Re-prioritize every frame so the focus tile can overtake old prefetch entries.
+      this.pendingByKey.set(pendingKey, desired);
     }
   }
 
@@ -267,7 +299,13 @@ export class WorldStream {
 
   private pumpQueue(): void {
     while (this.inflightByKey.size < this.maxConcurrentLoads) {
-      const nextRequest = this.dequeueNextPending();
+      const inflightFetchCount = this.countInflightByPhase('fetch');
+      if (inflightFetchCount >= this.maxConcurrentFetches) {
+        break;
+      }
+
+      const nowMs = performance.now();
+      const nextRequest = this.dequeueNextPending(nowMs);
       if (nextRequest === null) {
         break;
       }
@@ -277,18 +315,43 @@ export class WorldStream {
         tile: nextRequest.tile,
         phase: 'fetch',
       });
+
+      if (nextRequest.ringKind === 'prefetch') {
+        this.lastPrefetchDispatchAtMs = nowMs;
+      }
       void this.processTileLoad(nextRequest);
     }
   }
 
-  private dequeueNextPending(): DesiredTileEntry | null {
+  private dequeueNextPending(nowMs: number): DesiredTileEntry | null {
+    const allowPrefetch = this.canDispatchPrefetch(nowMs);
     let selected: DesiredTileEntry | null = null;
     for (const candidate of this.pendingByKey.values()) {
+      if (candidate.ringKind === 'prefetch' && !allowPrefetch) {
+        continue;
+      }
+
       if (selected === null || candidate.priority < selected.priority) {
         selected = candidate;
       }
     }
     return selected;
+  }
+
+  private canDispatchPrefetch(nowMs: number): boolean {
+    if (!this.loadedByKey.has(this.currentTileKey)) {
+      return false;
+    }
+
+    if (nowMs - this.focusTileChangedAtMs < this.prefetchFocusDelayMs) {
+      return false;
+    }
+
+    if (nowMs - this.lastPrefetchDispatchAtMs < this.prefetchRequestIntervalMs) {
+      return false;
+    }
+
+    return true;
   }
 
   private async processTileLoad(request: DesiredTileEntry): Promise<void> {
@@ -302,6 +365,18 @@ export class WorldStream {
     let topologyInserted = false;
 
     try {
+      const desiredAtStart = this.desiredByKey.get(tileKey);
+      if (this.disposed || desiredAtStart === undefined) {
+        this.canceledLoads += 1;
+        return;
+      }
+
+      if (desiredAtStart.ringKind === 'prefetch' && !this.canDispatchPrefetch(performance.now())) {
+        this.canceledLoads += 1;
+        this.pendingByKey.set(tileKey, desiredAtStart);
+        return;
+      }
+
       this.status = `loading fetch ${tileKey}`;
       const fetchParams = this.createTileFetchParams(request.tile, tileKey);
       const fetchStartedAt = performance.now();
@@ -390,8 +465,22 @@ export class WorldStream {
     const dy = Math.abs(tile.y - currentTile.y);
     const chebyshevDistance = Math.max(dx, dy);
     const manhattanDistance = dx + dy;
-    const ringWeight = ringKind === 'active' ? 0 : 1000;
-    return ringWeight + chebyshevDistance * 10 + manhattanDistance;
+
+    // Hard focus policy:
+    // current tile > active ring-1 > other active > prefetch.
+    if (chebyshevDistance === 0) {
+      return 0;
+    }
+
+    if (ringKind === 'active' && chebyshevDistance === 1) {
+      return 100 + manhattanDistance;
+    }
+
+    if (ringKind === 'active') {
+      return 200 + chebyshevDistance * 10 + manhattanDistance;
+    }
+
+    return 1000 + chebyshevDistance * 10 + manhattanDistance;
   }
 
   private countInflightByPhase(phase: 'fetch' | 'build'): number {

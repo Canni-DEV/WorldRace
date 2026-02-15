@@ -8,7 +8,11 @@ export interface RuntimeConfig {
   readonly cacheTtlMs: number;
   readonly cacheStaleWhileRevalidate: boolean;
   readonly streamMaxConcurrentLoads: number;
+  readonly streamMaxConcurrentFetches: number;
   readonly streamUseBuildWorker: boolean;
+  readonly streamPrefetchRequestIntervalMs: number;
+  readonly streamPrefetchFocusDelayMs: number;
+  readonly streamTileHysteresisMeters: number;
 }
 
 export const runtimeConfig: RuntimeConfig = Object.freeze({
@@ -20,6 +24,10 @@ export const runtimeConfig: RuntimeConfig = Object.freeze({
   floatingOriginThresholdMeters: 2000,
   cacheTtlMs: 7 * 24 * 60 * 60 * 1000,
   cacheStaleWhileRevalidate: true,
-  streamMaxConcurrentLoads: 3,
+  streamMaxConcurrentLoads: 2,
+  streamMaxConcurrentFetches: 1,
   streamUseBuildWorker: true,
+  streamPrefetchRequestIntervalMs: 650,
+  streamPrefetchFocusDelayMs: 250,
+  streamTileHysteresisMeters: 18,
 });

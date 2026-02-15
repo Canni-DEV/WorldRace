@@ -68,6 +68,7 @@ export class App {
   private readonly tileDataService: TileDataService;
   private readonly worldStream: WorldStream;
   private globalOffsetMeters: GlobalOffsetMeters = { east: 0, north: 0 };
+  private stableCurrentTile: TileCoordinate | null = null;
   private floatingOriginRecenters = 0;
   private roadDebugOverlayEnabled = false;
   private cacheMetrics: CacheMetricsSnapshot = EMPTY_CACHE_METRICS;
@@ -127,7 +128,10 @@ export class App {
       },
       {
         maxConcurrentLoads: runtimeConfig.streamMaxConcurrentLoads,
+        maxConcurrentFetches: runtimeConfig.streamMaxConcurrentFetches,
         useBuildWorker: runtimeConfig.streamUseBuildWorker,
+        prefetchRequestIntervalMs: runtimeConfig.streamPrefetchRequestIntervalMs,
+        prefetchFocusDelayMs: runtimeConfig.streamPrefetchFocusDelayMs,
       },
     );
 
@@ -259,7 +263,8 @@ export class App {
     const anchorPosition = this.anchor.getPosition();
     const globalEast = this.globalOffsetMeters.east + anchorPosition.x;
     const globalNorth = this.globalOffsetMeters.north + anchorPosition.z;
-    const currentTile = this.tileSystem.getTileFromGlobalMeters(globalEast, globalNorth);
+    const rawCurrentTile = this.tileSystem.getTileFromGlobalMeters(globalEast, globalNorth);
+    const currentTile = this.resolveCurrentTileWithHysteresis(rawCurrentTile, globalEast, globalNorth);
     const tileRings = this.tileSystem.getDesiredTileRings(
       currentTile,
       runtimeConfig.activeRadiusTiles,
@@ -290,6 +295,52 @@ export class App {
 
   private mapTilesToLocalBounds(tiles: readonly TileCoordinate[]): GeoBoundsMeters[] {
     return tiles.map((tile) => this.tileSystem.getTileBoundsLocalMeters(tile, this.globalOffsetMeters));
+  }
+
+  private resolveCurrentTileWithHysteresis(
+    rawTile: TileCoordinate,
+    globalEast: number,
+    globalNorth: number,
+  ): TileCoordinate {
+    const stableTile = this.stableCurrentTile;
+    if (stableTile === null) {
+      this.stableCurrentTile = rawTile;
+      return rawTile;
+    }
+
+    if (stableTile.x === rawTile.x && stableTile.y === rawTile.y) {
+      return stableTile;
+    }
+
+    const tileDeltaX = Math.abs(rawTile.x - stableTile.x);
+    const tileDeltaY = Math.abs(rawTile.y - stableTile.y);
+    if (tileDeltaX > 1 || tileDeltaY > 1) {
+      this.stableCurrentTile = rawTile;
+      return rawTile;
+    }
+
+    const rawTileBounds = this.tileSystem.getTileBoundsGlobalMeters(rawTile);
+    const tileSizeMeters = this.tileSystem.getTileSizeMeters();
+    const maxMargin = Math.max(0, tileSizeMeters * 0.5 - 1);
+    const hysteresisMargin = Math.min(runtimeConfig.streamTileHysteresisMeters, maxMargin);
+
+    if (hysteresisMargin <= 0) {
+      this.stableCurrentTile = rawTile;
+      return rawTile;
+    }
+
+    const isInsideInnerRawTile =
+      globalEast >= rawTileBounds.minEast + hysteresisMargin &&
+      globalEast <= rawTileBounds.maxEast - hysteresisMargin &&
+      globalNorth >= rawTileBounds.minNorth + hysteresisMargin &&
+      globalNorth <= rawTileBounds.maxNorth - hysteresisMargin;
+
+    if (isInsideInnerRawTile) {
+      this.stableCurrentTile = rawTile;
+      return rawTile;
+    }
+
+    return stableTile;
   }
 
   private applyFloatingOriginIfNeeded(): void {
