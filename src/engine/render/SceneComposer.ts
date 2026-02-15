@@ -1,15 +1,18 @@
 import {
   AmbientLight,
-  AxesHelper,
+  BufferGeometry,
   Color,
   DirectionalLight,
-  GridHelper,
+  Float32BufferAttribute,
+  LineBasicMaterial,
+  LineSegments,
   Mesh,
   PerspectiveCamera,
   Scene,
   WebGLRenderer,
 } from 'three';
-import type { BufferGeometry, Material, Object3D } from 'three';
+import type { Material, Object3D } from 'three';
+import type { GeoBoundsMeters } from '../geo/GeoBounds';
 
 export interface RenderStats {
   drawCalls: number;
@@ -17,12 +20,25 @@ export interface RenderStats {
 }
 
 type DisposableMesh = Mesh<BufferGeometry, Material | Material[]>;
+type DebugLineSegments = LineSegments<BufferGeometry, LineBasicMaterial>;
+
+export interface TileDebugGridData {
+  readonly activeTileBounds: readonly GeoBoundsMeters[];
+  readonly prefetchTileBounds: readonly GeoBoundsMeters[];
+  readonly currentTileBounds: GeoBoundsMeters;
+}
 
 export class SceneComposer {
   private readonly scene: Scene;
   private readonly camera: PerspectiveCamera;
   private readonly renderer: WebGLRenderer;
   private readonly container: HTMLElement;
+  private readonly prefetchLines: DebugLineSegments;
+  private readonly activeLines: DebugLineSegments;
+  private readonly currentTileLines: DebugLineSegments;
+  private readonly prefetchMaterial = new LineBasicMaterial({ color: 0x334155 });
+  private readonly activeMaterial = new LineBasicMaterial({ color: 0x60a5fa });
+  private readonly currentTileMaterial = new LineBasicMaterial({ color: 0xfacc15 });
 
   public constructor(container: HTMLElement) {
     this.container = container;
@@ -42,10 +58,17 @@ export class SceneComposer {
     const directionalLight = new DirectionalLight(0xffffff, 1.2);
     directionalLight.position.set(30, 50, 20);
 
-    const grid = new GridHelper(100, 40, 0x94a3b8, 0x334155);
-    const axes = new AxesHelper(4);
+    this.prefetchLines = this.createDebugLines(this.prefetchMaterial);
+    this.activeLines = this.createDebugLines(this.activeMaterial);
+    this.currentTileLines = this.createDebugLines(this.currentTileMaterial);
 
-    this.scene.add(ambientLight, directionalLight, grid, axes);
+    this.scene.add(
+      ambientLight,
+      directionalLight,
+      this.prefetchLines,
+      this.activeLines,
+      this.currentTileLines,
+    );
   }
 
   public resize(width: number, height: number): void {
@@ -58,6 +81,14 @@ export class SceneComposer {
     this.renderer.render(this.scene, this.camera);
   }
 
+  public getCamera(): PerspectiveCamera {
+    return this.camera;
+  }
+
+  public getInputElement(): HTMLCanvasElement {
+    return this.renderer.domElement;
+  }
+
   public getRenderStats(): RenderStats {
     return {
       drawCalls: this.renderer.info.render.calls,
@@ -65,7 +96,20 @@ export class SceneComposer {
     };
   }
 
+  public updateTileDebugGrid(data: TileDebugGridData): void {
+    this.updateLineGeometry(this.prefetchLines, data.prefetchTileBounds, 0.03);
+    this.updateLineGeometry(this.activeLines, data.activeTileBounds, 0.06);
+    this.updateLineGeometry(this.currentTileLines, [data.currentTileBounds], 0.1);
+  }
+
   public dispose(): void {
+    this.prefetchLines.geometry.dispose();
+    this.activeLines.geometry.dispose();
+    this.currentTileLines.geometry.dispose();
+    this.prefetchMaterial.dispose();
+    this.activeMaterial.dispose();
+    this.currentTileMaterial.dispose();
+
     this.scene.traverse((object3D) => {
       if (this.isDisposableMesh(object3D)) {
         object3D.geometry.dispose();
@@ -90,5 +134,61 @@ export class SceneComposer {
 
   private isDisposableMesh(object3D: Object3D): object3D is DisposableMesh {
     return object3D instanceof Mesh;
+  }
+
+  private createDebugLines(material: LineBasicMaterial): DebugLineSegments {
+    return new LineSegments(new BufferGeometry(), material);
+  }
+
+  private updateLineGeometry(
+    lineSegments: DebugLineSegments,
+    tileBounds: readonly GeoBoundsMeters[],
+    height: number,
+  ): void {
+    const vertices = this.buildTileBorderVertices(tileBounds, height);
+    const nextGeometry = new BufferGeometry();
+    nextGeometry.setAttribute('position', new Float32BufferAttribute(vertices, 3));
+    lineSegments.geometry.dispose();
+    lineSegments.geometry = nextGeometry;
+  }
+
+  private buildTileBorderVertices(tileBounds: readonly GeoBoundsMeters[], height: number): number[] {
+    const vertices: number[] = [];
+
+    for (const bounds of tileBounds) {
+      const x0 = bounds.minEast;
+      const x1 = bounds.maxEast;
+      const z0 = bounds.minNorth;
+      const z1 = bounds.maxNorth;
+
+      vertices.push(
+        x0,
+        height,
+        z0,
+        x1,
+        height,
+        z0,
+        x1,
+        height,
+        z0,
+        x1,
+        height,
+        z1,
+        x1,
+        height,
+        z1,
+        x0,
+        height,
+        z1,
+        x0,
+        height,
+        z1,
+        x0,
+        height,
+        z0,
+      );
+    }
+
+    return vertices;
   }
 }

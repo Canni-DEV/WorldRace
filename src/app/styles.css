@@ -33,7 +33,7 @@ canvas {
 
 .overlay-panel {
   position: absolute;
-  min-width: 220px;
+  min-width: 320px;
   padding: 10px 12px;
   border: 1px solid rgba(203, 213, 225, 0.25);
   border-radius: 10px;
@@ -53,6 +53,7 @@ canvas {
 .overlay-row {
   margin: 4px 0;
   font-size: 13px;
+  word-break: break-word;
 }
 
 .hud-panel {
