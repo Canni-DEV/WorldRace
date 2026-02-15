@@ -4,22 +4,35 @@ import {
   Color,
   DirectionalLight,
   Float32BufferAttribute,
+  Group,
   LineBasicMaterial,
   LineSegments,
   Mesh,
+  MeshBasicMaterial,
+  MeshStandardMaterial,
   PerspectiveCamera,
   Scene,
+  Uint32BufferAttribute,
   WebGLRenderer,
 } from 'three';
-import type { Material, Object3D } from 'three';
 import type { GeoBoundsMeters } from '../geo/GeoBounds';
+import type { RoadTileMeshPayload } from '../world/RoadMeshTypes';
+
+interface RoadTileBundle {
+  readonly tileKey: string;
+  readonly group: Group;
+  readonly surfaceGeometry: BufferGeometry;
+  readonly collisionGeometry: BufferGeometry;
+  readonly debugLineGeometry: BufferGeometry;
+}
 
 export interface RenderStats {
   drawCalls: number;
   triangles: number;
+  geometries: number;
+  textures: number;
 }
 
-type DisposableMesh = Mesh<BufferGeometry, Material | Material[]>;
 type DebugLineSegments = LineSegments<BufferGeometry, LineBasicMaterial>;
 
 export interface TileDebugGridData {
@@ -33,12 +46,33 @@ export class SceneComposer {
   private readonly camera: PerspectiveCamera;
   private readonly renderer: WebGLRenderer;
   private readonly container: HTMLElement;
+  private readonly roadRoot = new Group();
+  private readonly roadTileBundles = new Map<string, RoadTileBundle>();
   private readonly prefetchLines: DebugLineSegments;
   private readonly activeLines: DebugLineSegments;
   private readonly currentTileLines: DebugLineSegments;
   private readonly prefetchMaterial = new LineBasicMaterial({ color: 0x334155 });
   private readonly activeMaterial = new LineBasicMaterial({ color: 0x60a5fa });
   private readonly currentTileMaterial = new LineBasicMaterial({ color: 0xfacc15 });
+  private readonly roadSurfaceMaterial = new MeshStandardMaterial({
+    color: 0x2c313a,
+    roughness: 0.95,
+    metalness: 0.02,
+  });
+  private readonly roadWireframeMaterial = new MeshBasicMaterial({
+    color: 0x94a3b8,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.7,
+  });
+  private readonly roadCollisionMaterial = new MeshBasicMaterial({
+    color: 0x0ea5e9,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+  });
+  private readonly roadDebugLineMaterial = new LineBasicMaterial({ color: 0xf59e0b });
+  private roadDebugVisible = false;
 
   public constructor(container: HTMLElement) {
     this.container = container;
@@ -61,10 +95,10 @@ export class SceneComposer {
     this.prefetchLines = this.createDebugLines(this.prefetchMaterial);
     this.activeLines = this.createDebugLines(this.activeMaterial);
     this.currentTileLines = this.createDebugLines(this.currentTileMaterial);
-
     this.scene.add(
       ambientLight,
       directionalLight,
+      this.roadRoot,
       this.prefetchLines,
       this.activeLines,
       this.currentTileLines,
@@ -93,7 +127,76 @@ export class SceneComposer {
     return {
       drawCalls: this.renderer.info.render.calls,
       triangles: this.renderer.info.render.triangles,
+      geometries: this.renderer.info.memory.geometries,
+      textures: this.renderer.info.memory.textures,
     };
+  }
+
+  public setWorldOffset(offsetEast: number, offsetNorth: number): void {
+    this.roadRoot.position.set(-offsetEast, 0, -offsetNorth);
+  }
+
+  public setRoadDebugOverlayEnabled(enabled: boolean): void {
+    this.roadDebugVisible = enabled;
+    for (const bundle of this.roadTileBundles.values()) {
+      for (const child of bundle.group.children) {
+        if (!(child instanceof Mesh) && !(child instanceof LineSegments)) {
+          continue;
+        }
+
+        if (child.name === 'road-wireframe' || child.name === 'road-debug-lines') {
+          child.visible = enabled;
+        }
+      }
+    }
+  }
+
+  public upsertRoadTileMesh(tileMesh: RoadTileMeshPayload): void {
+    this.removeRoadTileMesh(tileMesh.tileKey);
+    if (tileMesh.surfacePositions.length === 0 || tileMesh.surfaceIndices.length === 0) {
+      return;
+    }
+
+    const surfaceGeometry = this.createRoadSurfaceGeometry(
+      tileMesh.surfacePositions,
+      tileMesh.surfaceIndices,
+      tileMesh.surfaceUvs,
+    );
+    const collisionGeometry = this.createCollisionGeometry(
+      tileMesh.collisionPositions,
+      tileMesh.collisionIndices,
+    );
+    const debugLineGeometry = this.createLineGeometry(tileMesh.debugLinePositions);
+
+    const surfaceMesh = new Mesh(surfaceGeometry, this.roadSurfaceMaterial);
+    surfaceMesh.name = 'road-surface';
+    surfaceMesh.castShadow = false;
+    surfaceMesh.receiveShadow = true;
+
+    const wireframeMesh = new Mesh(surfaceGeometry, this.roadWireframeMaterial);
+    wireframeMesh.name = 'road-wireframe';
+    wireframeMesh.visible = this.roadDebugVisible;
+
+    const collisionMesh = new Mesh(collisionGeometry, this.roadCollisionMaterial);
+    collisionMesh.name = 'road-collision';
+    collisionMesh.visible = false;
+
+    const debugLines = new LineSegments(debugLineGeometry, this.roadDebugLineMaterial);
+    debugLines.name = 'road-debug-lines';
+    debugLines.visible = this.roadDebugVisible;
+
+    const group = new Group();
+    group.name = `road-tile:${tileMesh.tileKey}`;
+    group.add(surfaceMesh, wireframeMesh, collisionMesh, debugLines);
+
+    this.roadRoot.add(group);
+    this.roadTileBundles.set(tileMesh.tileKey, {
+      tileKey: tileMesh.tileKey,
+      group,
+      surfaceGeometry,
+      collisionGeometry,
+      debugLineGeometry,
+    });
   }
 
   public updateTileDebugGrid(data: TileDebugGridData): void {
@@ -103,37 +206,77 @@ export class SceneComposer {
   }
 
   public dispose(): void {
+    this.clearRoadTiles();
+
     this.prefetchLines.geometry.dispose();
     this.activeLines.geometry.dispose();
     this.currentTileLines.geometry.dispose();
     this.prefetchMaterial.dispose();
     this.activeMaterial.dispose();
     this.currentTileMaterial.dispose();
-
-    this.scene.traverse((object3D) => {
-      if (this.isDisposableMesh(object3D)) {
-        object3D.geometry.dispose();
-        this.disposeMaterial(object3D.material);
-      }
-    });
+    this.roadSurfaceMaterial.dispose();
+    this.roadWireframeMaterial.dispose();
+    this.roadCollisionMaterial.dispose();
+    this.roadDebugLineMaterial.dispose();
 
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
 
-  private disposeMaterial(material: Material | Material[]): void {
-    if (Array.isArray(material)) {
-      for (const entry of material) {
-        entry.dispose();
-      }
+  private clearRoadTiles(): void {
+    for (const tileKey of this.roadTileBundles.keys()) {
+      this.removeRoadTileMesh(tileKey);
+    }
+  }
+
+  public removeRoadTileMesh(tileKey: string): void {
+    const bundle = this.roadTileBundles.get(tileKey);
+    if (bundle === undefined) {
       return;
     }
 
-    material.dispose();
+    this.roadTileBundles.delete(tileKey);
+    this.roadRoot.remove(bundle.group);
+    bundle.surfaceGeometry.dispose();
+    bundle.collisionGeometry.dispose();
+    bundle.debugLineGeometry.dispose();
   }
 
-  private isDisposableMesh(object3D: Object3D): object3D is DisposableMesh {
-    return object3D instanceof Mesh;
+  public getRoadTileCount(): number {
+    return this.roadTileBundles.size;
+  }
+
+  private createRoadSurfaceGeometry(
+    positions: Float32Array,
+    indices: Uint32Array,
+    uvs: Float32Array,
+  ): BufferGeometry {
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
+    geometry.setIndex(new Uint32BufferAttribute(indices, 1));
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    return geometry;
+  }
+
+  private createCollisionGeometry(positions: Float32Array, indices: Uint32Array): BufferGeometry {
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    geometry.setIndex(new Uint32BufferAttribute(indices, 1));
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    return geometry;
+  }
+
+  private createLineGeometry(positions: Float32Array): BufferGeometry {
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    return geometry;
   }
 
   private createDebugLines(material: LineBasicMaterial): DebugLineSegments {

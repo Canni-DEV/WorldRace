@@ -16,7 +16,7 @@ import type {
   TileOSMData,
 } from './Types';
 
-const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v1';
+const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v3';
 const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-v1';
 const STATS_REFRESH_INTERVAL_MS = 2500;
 type OverpassWayElement = Extract<OverpassResponse['elements'][number], { type: 'way' }>;
@@ -211,6 +211,7 @@ export class TileDataService {
           points: geometry,
           properties: {
             highway: way.tags?.highway ?? 'unclassified',
+            widthMeters: this.parseWidthMeters(way.tags?.width ?? null),
             lanes: this.parsePositiveInteger(way.tags?.lanes ?? null),
             oneway: this.parseOnewayTag(way.tags?.oneway ?? null),
             maxspeed: way.tags?.maxspeed ?? null,
@@ -238,6 +239,10 @@ export class TileDataService {
       sourceEndpoint: endpoint,
       fetchedAt,
       bbox: params.bbox,
+      tileOriginGlobalMeters: {
+        east: params.tileOriginGlobalMeters.east,
+        north: params.tileOriginGlobalMeters.north,
+      },
       roads,
       buildings,
     };
@@ -348,6 +353,30 @@ export class TileDataService {
     if (!Number.isFinite(parsed) || parsed <= 0) {
       return null;
     }
+    return parsed;
+  }
+
+  private parseWidthMeters(value: string | null): number | null {
+    if (value === null) {
+      return null;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (normalized.length === 0) {
+      return null;
+    }
+
+    const firstToken = normalized.split(';')[0] ?? normalized;
+    const match = /^-?\d+(\.\d+)?/.exec(firstToken.trim());
+    if (match === null) {
+      return null;
+    }
+
+    const parsed = Number.parseFloat(match[0]);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return null;
+    }
+
     return parsed;
   }
 

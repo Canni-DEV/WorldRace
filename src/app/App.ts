@@ -6,12 +6,15 @@ import { TileSystem } from '../engine/geo/TileSystem';
 import { SceneComposer } from '../engine/render/SceneComposer';
 import { Anchor } from '../engine/sim/Anchor';
 import { CameraController } from '../engine/sim/CameraController';
+import { TopologyRegistry } from '../engine/world/TopologyRegistry';
+import { WorldStream } from '../engine/world/WorldStream';
 import { DebugPanel } from '../ui/DebugPanel';
 import { HUD } from '../ui/HUD';
 import type { CacheMetricsSnapshot, TileFetchParams } from '../engine/data/Types';
 import type { GeoBoundsMeters } from '../engine/geo/GeoBounds';
 import type { TileDebugGridData } from '../engine/render/SceneComposer';
 import type { GlobalOffsetMeters, TileCoordinate, TileRings } from '../engine/geo/TileSystem';
+import type { RoadMeshStats } from '../engine/world/RoadMeshTypes';
 
 interface SpatialState {
   readonly tileKey: string;
@@ -37,6 +40,22 @@ const EMPTY_CACHE_METRICS: CacheMetricsSnapshot = {
   lastSource: 'none',
 };
 
+const EMPTY_ROAD_MESH_STATS: RoadMeshStats = {
+  edgeCountMeshed: 0,
+  droppedEdges: 0,
+  triangleCount: 0,
+  collisionTriangleCount: 0,
+  minResolvedWidthMeters: 0,
+  maxResolvedWidthMeters: 0,
+  junctionNodesConsidered: 0,
+  junctionPolygonsBuilt: 0,
+  junctionTriangles: 0,
+  junctionMiterCorners: 0,
+  junctionBevelCorners: 0,
+  junctionFallbackCorners: 0,
+  junctionTriangulationFailures: 0,
+};
+
 export class App {
   private readonly clock = new Clock();
   private readonly sceneComposer: SceneComposer;
@@ -47,18 +66,26 @@ export class App {
   private readonly anchor: Anchor;
   private readonly cameraController: CameraController;
   private readonly tileDataService: TileDataService;
+  private readonly worldStream: WorldStream;
   private globalOffsetMeters: GlobalOffsetMeters = { east: 0, north: 0 };
+  private stableCurrentTile: TileCoordinate | null = null;
   private floatingOriginRecenters = 0;
-  private lastTileDataRequestKey: string | null = null;
-  private currentTileDataStatus = 'idle';
-  private currentTileRoadsCount = 0;
-  private currentTileBuildingsCount = 0;
+  private roadDebugOverlayEnabled = false;
   private cacheMetrics: CacheMetricsSnapshot = EMPTY_CACHE_METRICS;
   private frameHandle = 0;
   private isRunning = false;
 
   private readonly onResize = (): void => {
     this.sceneComposer.resize(window.innerWidth, window.innerHeight);
+  };
+
+  private readonly onKeyDown = (event: KeyboardEvent): void => {
+    if (event.code !== 'KeyB') {
+      return;
+    }
+
+    this.roadDebugOverlayEnabled = !this.roadDebugOverlayEnabled;
+    this.sceneComposer.setRoadDebugOverlayEnabled(this.roadDebugOverlayEnabled);
   };
 
   public constructor(rootElement: HTMLElement) {
@@ -83,6 +110,7 @@ export class App {
         cacheTtlMs: runtimeConfig.cacheTtlMs,
       },
     );
+    const topologyRegistry = new TopologyRegistry();
     this.tileSystem = new TileSystem(runtimeConfig.tileSizeMeters);
     this.anchor = new Anchor(this.sceneComposer.getCamera().position);
     this.cameraController = new CameraController(
@@ -90,9 +118,28 @@ export class App {
       this.sceneComposer.getInputElement(),
       this.anchor,
     );
+    this.worldStream = new WorldStream(
+      {
+        tileSystem: this.tileSystem,
+        tileDataService: this.tileDataService,
+        topologyRegistry,
+        sceneComposer: this.sceneComposer,
+        createTileFetchParams: (tile, tileKey) => this.createTileFetchParams(tile, tileKey),
+      },
+      {
+        maxConcurrentLoads: runtimeConfig.streamMaxConcurrentLoads,
+        maxConcurrentFetches: runtimeConfig.streamMaxConcurrentFetches,
+        useBuildWorker: runtimeConfig.streamUseBuildWorker,
+        prefetchRequestIntervalMs: runtimeConfig.streamPrefetchRequestIntervalMs,
+        prefetchFocusDelayMs: runtimeConfig.streamPrefetchFocusDelayMs,
+      },
+    );
 
     this.onResize();
+    this.sceneComposer.setWorldOffset(this.globalOffsetMeters.east, this.globalOffsetMeters.north);
+    this.sceneComposer.setRoadDebugOverlayEnabled(this.roadDebugOverlayEnabled);
     window.addEventListener('resize', this.onResize);
+    window.addEventListener('keydown', this.onKeyDown);
   }
 
   public start(): void {
@@ -112,8 +159,10 @@ export class App {
       this.cameraController.update(deltaSeconds);
       this.applyFloatingOriginIfNeeded();
       const spatialState = this.computeSpatialState();
-      this.ensureTileDataForCurrentTile(spatialState);
+      this.worldStream.update(spatialState.currentTile, spatialState.tileRings);
+      const streamSnapshot = this.worldStream.getSnapshot();
       this.cacheMetrics = this.tileDataService.getMetricsSnapshot();
+      this.sceneComposer.setWorldOffset(this.globalOffsetMeters.east, this.globalOffsetMeters.north);
       this.sceneComposer.updateTileDebugGrid(spatialState.tileDebugGridData);
       this.sceneComposer.render();
 
@@ -123,7 +172,7 @@ export class App {
       this.hud.update({
         fps,
         frameMs: deltaSeconds * 1000,
-        status: 'Move: WASD/Arrows, Up/Down: E/Q, Hold right-click to look',
+        status: 'Move: WASD/Arrows, Up/Down: E/Q, RMB look, B toggles road debug',
         anchorEastMeters: spatialState.anchorEastMeters,
         anchorNorthMeters: spatialState.anchorNorthMeters,
         anchorLatitude: spatialState.anchorLatitude,
@@ -148,9 +197,40 @@ export class App {
         activeTileSample: this.formatTileSample(spatialState.tileRings.activeTiles),
         prefetchTileSample: this.formatTileSample(spatialState.tileRings.prefetchTiles),
         floatingOriginRecenters: this.floatingOriginRecenters,
-        tileDataStatus: this.currentTileDataStatus,
-        tileRoadsCount: this.currentTileRoadsCount,
-        tileBuildingsCount: this.currentTileBuildingsCount,
+        tileDataStatus: streamSnapshot.status,
+        tileRoadsCount: streamSnapshot.currentTile?.roadsCount ?? 0,
+        tileBuildingsCount: streamSnapshot.currentTile?.buildingsCount ?? 0,
+        topologyNodeCount: streamSnapshot.currentTile?.topologyNodeCount ?? 0,
+        topologyEdgeCount: streamSnapshot.currentTile?.topologyEdgeCount ?? 0,
+        topologyIntersectionSplits: streamSnapshot.currentTile?.topologyIntersectionSplits ?? 0,
+        topologyDroppedSegments: streamSnapshot.currentTile?.topologyDroppedSegments ?? 0,
+        topologyStitchedNodes: streamSnapshot.currentTile?.topologyStitchedNodes ?? 0,
+        roadMeshEdgeCount: streamSnapshot.currentTile?.roadMeshStats.edgeCountMeshed ?? 0,
+        roadMeshTriangleCount: streamSnapshot.currentTile?.roadMeshStats.triangleCount ?? 0,
+        roadCollisionTriangleCount: streamSnapshot.currentTile?.roadMeshStats.collisionTriangleCount ?? 0,
+        roadMeshWidthRange: this.formatRoadWidthRange(
+          streamSnapshot.currentTile?.roadMeshStats ?? EMPTY_ROAD_MESH_STATS,
+        ),
+        roadJunctionSummary: this.formatRoadJunctionSummary(
+          streamSnapshot.currentTile?.roadMeshStats ?? EMPTY_ROAD_MESH_STATS,
+        ),
+        roadDebugOverlayEnabled: this.roadDebugOverlayEnabled,
+        renderedRoadTiles: this.sceneComposer.getRoadTileCount(),
+        streamDesiredTiles: streamSnapshot.desiredTiles,
+        streamLoadedTiles: streamSnapshot.loadedTiles,
+        streamPendingTiles: streamSnapshot.pendingTiles,
+        streamInflightFetches: streamSnapshot.inflightFetches,
+        streamInflightBuilds: streamSnapshot.inflightBuilds,
+        streamLastFetchMs: streamSnapshot.lastFetchMs,
+        streamLastBuildMs: streamSnapshot.lastBuildMs,
+        streamCanceledLoads: streamSnapshot.canceledLoads,
+        streamDisposedTiles: streamSnapshot.disposedTiles,
+        streamFetchErrors: streamSnapshot.fetchErrors,
+        streamBuildErrors: streamSnapshot.buildErrors,
+        streamApproxMeshMegabytes: streamSnapshot.approxMeshMegabytes,
+        streamBuildMode: streamSnapshot.buildMode,
+        gpuGeometries: renderStats.geometries,
+        gpuTextures: renderStats.textures,
       });
 
       this.frameHandle = window.requestAnimationFrame(animate);
@@ -171,6 +251,8 @@ export class App {
   public destroy(): void {
     this.stop();
     window.removeEventListener('resize', this.onResize);
+    window.removeEventListener('keydown', this.onKeyDown);
+    this.worldStream.dispose();
     this.cameraController.dispose();
     this.hud.dispose();
     this.debugPanel.dispose();
@@ -181,7 +263,8 @@ export class App {
     const anchorPosition = this.anchor.getPosition();
     const globalEast = this.globalOffsetMeters.east + anchorPosition.x;
     const globalNorth = this.globalOffsetMeters.north + anchorPosition.z;
-    const currentTile = this.tileSystem.getTileFromGlobalMeters(globalEast, globalNorth);
+    const rawCurrentTile = this.tileSystem.getTileFromGlobalMeters(globalEast, globalNorth);
+    const currentTile = this.resolveCurrentTileWithHysteresis(rawCurrentTile, globalEast, globalNorth);
     const tileRings = this.tileSystem.getDesiredTileRings(
       currentTile,
       runtimeConfig.activeRadiusTiles,
@@ -212,6 +295,52 @@ export class App {
 
   private mapTilesToLocalBounds(tiles: readonly TileCoordinate[]): GeoBoundsMeters[] {
     return tiles.map((tile) => this.tileSystem.getTileBoundsLocalMeters(tile, this.globalOffsetMeters));
+  }
+
+  private resolveCurrentTileWithHysteresis(
+    rawTile: TileCoordinate,
+    globalEast: number,
+    globalNorth: number,
+  ): TileCoordinate {
+    const stableTile = this.stableCurrentTile;
+    if (stableTile === null) {
+      this.stableCurrentTile = rawTile;
+      return rawTile;
+    }
+
+    if (stableTile.x === rawTile.x && stableTile.y === rawTile.y) {
+      return stableTile;
+    }
+
+    const tileDeltaX = Math.abs(rawTile.x - stableTile.x);
+    const tileDeltaY = Math.abs(rawTile.y - stableTile.y);
+    if (tileDeltaX > 1 || tileDeltaY > 1) {
+      this.stableCurrentTile = rawTile;
+      return rawTile;
+    }
+
+    const rawTileBounds = this.tileSystem.getTileBoundsGlobalMeters(rawTile);
+    const tileSizeMeters = this.tileSystem.getTileSizeMeters();
+    const maxMargin = Math.max(0, tileSizeMeters * 0.5 - 1);
+    const hysteresisMargin = Math.min(runtimeConfig.streamTileHysteresisMeters, maxMargin);
+
+    if (hysteresisMargin <= 0) {
+      this.stableCurrentTile = rawTile;
+      return rawTile;
+    }
+
+    const isInsideInnerRawTile =
+      globalEast >= rawTileBounds.minEast + hysteresisMargin &&
+      globalEast <= rawTileBounds.maxEast - hysteresisMargin &&
+      globalNorth >= rawTileBounds.minNorth + hysteresisMargin &&
+      globalNorth <= rawTileBounds.maxNorth - hysteresisMargin;
+
+    if (isInsideInnerRawTile) {
+      this.stableCurrentTile = rawTile;
+      return rawTile;
+    }
+
+    return stableTile;
   }
 
   private applyFloatingOriginIfNeeded(): void {
@@ -254,35 +383,12 @@ export class App {
     return `${sample} | ...`;
   }
 
-  private ensureTileDataForCurrentTile(spatialState: SpatialState): void {
-    if (this.lastTileDataRequestKey === spatialState.tileKey) {
-      return;
-    }
+  private formatRoadWidthRange(stats: RoadMeshStats): string {
+    return `${stats.minResolvedWidthMeters.toFixed(1)}-${stats.maxResolvedWidthMeters.toFixed(1)}`;
+  }
 
-    this.lastTileDataRequestKey = spatialState.tileKey;
-    this.currentTileDataStatus = `loading ${spatialState.tileKey}`;
-    const requestTileKey = spatialState.tileKey;
-    const fetchParams = this.createTileFetchParams(spatialState.currentTile, requestTileKey);
-
-    void this.tileDataService
-      .getOrFetchTile(fetchParams)
-      .then((result) => {
-        if (this.lastTileDataRequestKey !== requestTileKey) {
-          return;
-        }
-
-        this.currentTileDataStatus = `${result.source} ${requestTileKey}`;
-        this.currentTileRoadsCount = result.data.roads.length;
-        this.currentTileBuildingsCount = result.data.buildings.length;
-      })
-      .catch((error: unknown) => {
-        if (this.lastTileDataRequestKey !== requestTileKey) {
-          return;
-        }
-
-        const message = error instanceof Error ? error.message : 'unknown error';
-        this.currentTileDataStatus = `error ${requestTileKey}: ${message}`;
-      });
+  private formatRoadJunctionSummary(stats: RoadMeshStats): string {
+    return `nodes ${stats.junctionNodesConsidered} | polys ${stats.junctionPolygonsBuilt} | tris ${stats.junctionTriangles} | m/b/f ${stats.junctionMiterCorners}/${stats.junctionBevelCorners}/${stats.junctionFallbackCorners} | fail ${stats.junctionTriangulationFailures}`;
   }
 
   private createTileFetchParams(currentTile: TileCoordinate, tileKey: string): TileFetchParams {

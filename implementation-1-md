@@ -81,77 +81,81 @@
 
 ### PR-04: Topology pipeline for road fidelity
 **Goal:** convert raw ways into robust road graph with clean geometry.
+**Status:** implemented locally.
 
 **Checklist**
-- [ ] Build road graph from OSM ways and nodes.
-- [ ] Split ways at true intersections and shared nodes.
-- [ ] Deduplicate near-coincident nodes using tolerance.
-- [ ] Preserve original centerline for gameplay/reference path.
-- [ ] Add optional visual smoothing path, separate from canonical geometry.
-- [ ] Implement tile border stitching to keep continuity across neighbors.
-- [ ] Validate and repair invalid segments (self overlaps, zero-length edges).
+- [x] Build road graph from OSM ways and nodes.
+- [x] Split ways at true intersections and shared nodes.
+- [x] Deduplicate near-coincident nodes using tolerance.
+- [x] Preserve original centerline for gameplay/reference path.
+- [x] Add optional visual smoothing path, separate from canonical geometry.
+- [x] Implement tile border stitching to keep continuity across neighbors.
+- [x] Validate and repair invalid segments (self overlaps, zero-length edges).
 
 **Acceptance**
-- [ ] Road graph continuity survives tile boundaries.
-- [ ] Canonical centerline remains spatially close to OSM geometry.
-- [ ] Invalid/degenerate segments are dropped or fixed deterministically.
+- [x] Road graph continuity survives tile boundaries.
+- [x] Canonical centerline remains spatially close to OSM geometry.
+- [x] Invalid/degenerate segments are dropped or fixed deterministically.
 
 ---
 
 ### PR-05: Road mesher (core) + basic collisions
 **Goal:** first playable road surfaces with accurate width handling.
+**Status:** implemented locally.
 
 **Checklist**
-- [ ] Implement lane/width resolver priority:
-- [ ] `width` tag
-- [ ] else `lanes * defaultLaneWidth`
-- [ ] else highway-class fallback
-- [ ] Build left/right offsets per segment from centerline.
-- [ ] Triangulate ribbon mesh with robust segment joins.
-- [ ] Implement UV mapping by accumulated length.
-- [ ] Add asphalt material and wire/debug view toggles.
-- [ ] Build simplified collision mesh from road surface.
+- [x] Implement lane/width resolver priority:
+- [x] `width` tag
+- [x] else `lanes * defaultLaneWidth`
+- [x] else highway-class fallback
+- [x] Build left/right offsets per segment from centerline.
+- [x] Triangulate ribbon mesh with robust segment joins.
+- [x] Implement UV mapping by accumulated length.
+- [x] Add asphalt material and wire/debug view toggles.
+- [x] Build simplified collision mesh from road surface.
 
 **Acceptance**
-- [ ] Roads visible and contiguous inside tile.
-- [ ] Width heuristics match expected classes and tags.
-- [ ] Collision surface aligns with render mesh.
+- [x] Roads visible and contiguous inside tile.
+- [x] Width heuristics match expected classes and tags.
+- [x] Collision surface aligns with render mesh.
 
 ---
 
 ### PR-06: Road intersections (junction meshing)
 **Goal:** remove visual breaks at crossings and merges.
+**Status:** implemented locally.
 
 **Checklist**
-- [ ] Build junction polygons by sorting branch edges by angle.
-- [ ] Resolve join style policy (`miter`, `bevel`, fallback by angle threshold).
-- [ ] Triangulate junction fill and weld with incoming ribbons.
-- [ ] Add turn pocket handling for acute intersections (simple fallback allowed).
-- [ ] Add seam suppression and normal/tangent consistency checks.
-- [ ] Add geometry diagnostics for failed triangulation cases.
+- [x] Build junction polygons by sorting branch edges by angle.
+- [x] Resolve join style policy (`miter`, `bevel`, fallback by angle threshold).
+- [x] Triangulate junction fill and weld with incoming ribbons.
+- [x] Add turn pocket handling for acute intersections (simple fallback allowed).
+- [x] Add seam suppression and normal/tangent consistency checks.
+- [x] Add geometry diagnostics for failed triangulation cases.
 
 **Acceptance**
-- [ ] Major intersections render without cracks/holes.
-- [ ] No z-fighting at standard crossing cases.
-- [ ] Junction failures fall back gracefully without app crash.
+- [x] Major intersections render without cracks/holes.
+- [x] No z-fighting at standard crossing cases.
+- [x] Junction failures fall back gracefully without app crash.
 
 ---
 
 ### PR-07: Streaming runtime + workers + disposal
 **Goal:** stable load/unload loop around anchor.
+**Status:** implemented locally.
 
 **Checklist**
-- [ ] Implement `WorldStream` desired/active tile diff each frame tick.
-- [ ] Load queue with priorities (center tile > near ring > prefetch ring).
-- [ ] Build queue offloaded to Web Worker(s) where practical.
-- [ ] Add cancellation for obsolete tiles when anchor moves fast.
-- [ ] Implement strict disposal of geometries/materials/textures on unload.
-- [ ] Add runtime metrics: fetch ms, build ms, GPU objects, approx memory.
+- [x] Implement `WorldStream` desired/active tile diff each frame tick.
+- [x] Load queue with priorities (center tile > near ring > prefetch ring).
+- [x] Build queue offloaded to Web Worker(s) where practical.
+- [x] Add cancellation for obsolete tiles when anchor moves fast.
+- [x] Implement strict disposal of geometries/materials/textures on unload.
+- [x] Add runtime metrics: fetch ms, build ms, GPU objects, approx memory.
 
 **Acceptance**
-- [ ] Fly-through loads new tiles and unloads old tiles without leaks.
-- [ ] FPS remains stable under continuous movement.
-- [ ] No unbounded growth in geometry/material counts.
+- [x] Fly-through loads new tiles and unloads old tiles without leaks.
+- [x] FPS remains stable under continuous movement.
+- [x] No unbounded growth in geometry/material counts.
 
 ---
 

@@ -12,6 +12,7 @@ export interface PointMeters {
 
 export interface RoadProperties {
   readonly highway: string;
+  readonly widthMeters: number | null;
   readonly lanes: number | null;
   readonly oneway: boolean | null;
   readonly maxspeed: string | null;
@@ -42,6 +43,7 @@ export interface TileOSMData {
   readonly sourceEndpoint: string;
   readonly fetchedAt: number;
   readonly bbox: GeoBoundsLatLon;
+  readonly tileOriginGlobalMeters: PointMeters;
   readonly roads: readonly RoadFeature[];
   readonly buildings: readonly BuildingFeature[];
 }
