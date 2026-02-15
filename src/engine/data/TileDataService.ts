@@ -16,7 +16,7 @@ import type {
   TileOSMData,
 } from './Types';
 
-const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v1';
+const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v2';
 const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-v1';
 const STATS_REFRESH_INTERVAL_MS = 2500;
 type OverpassWayElement = Extract<OverpassResponse['elements'][number], { type: 'way' }>;
@@ -238,6 +238,10 @@ export class TileDataService {
       sourceEndpoint: endpoint,
       fetchedAt,
       bbox: params.bbox,
+      tileOriginGlobalMeters: {
+        east: params.tileOriginGlobalMeters.east,
+        north: params.tileOriginGlobalMeters.north,
+      },
       roads,
       buildings,
     };

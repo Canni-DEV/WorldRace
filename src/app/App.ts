@@ -6,6 +6,7 @@ import { TileSystem } from '../engine/geo/TileSystem';
 import { SceneComposer } from '../engine/render/SceneComposer';
 import { Anchor } from '../engine/sim/Anchor';
 import { CameraController } from '../engine/sim/CameraController';
+import { TopologyRegistry } from '../engine/world/TopologyRegistry';
 import { DebugPanel } from '../ui/DebugPanel';
 import { HUD } from '../ui/HUD';
 import type { CacheMetricsSnapshot, TileFetchParams } from '../engine/data/Types';
@@ -47,12 +48,18 @@ export class App {
   private readonly anchor: Anchor;
   private readonly cameraController: CameraController;
   private readonly tileDataService: TileDataService;
+  private readonly topologyRegistry: TopologyRegistry;
   private globalOffsetMeters: GlobalOffsetMeters = { east: 0, north: 0 };
   private floatingOriginRecenters = 0;
   private lastTileDataRequestKey: string | null = null;
   private currentTileDataStatus = 'idle';
   private currentTileRoadsCount = 0;
   private currentTileBuildingsCount = 0;
+  private currentTopologyNodeCount = 0;
+  private currentTopologyEdgeCount = 0;
+  private currentTopologyIntersectionSplits = 0;
+  private currentTopologyDroppedSegments = 0;
+  private currentTopologyStitchedNodes = 0;
   private cacheMetrics: CacheMetricsSnapshot = EMPTY_CACHE_METRICS;
   private frameHandle = 0;
   private isRunning = false;
@@ -83,6 +90,7 @@ export class App {
         cacheTtlMs: runtimeConfig.cacheTtlMs,
       },
     );
+    this.topologyRegistry = new TopologyRegistry();
     this.tileSystem = new TileSystem(runtimeConfig.tileSizeMeters);
     this.anchor = new Anchor(this.sceneComposer.getCamera().position);
     this.cameraController = new CameraController(
@@ -151,6 +159,11 @@ export class App {
         tileDataStatus: this.currentTileDataStatus,
         tileRoadsCount: this.currentTileRoadsCount,
         tileBuildingsCount: this.currentTileBuildingsCount,
+        topologyNodeCount: this.currentTopologyNodeCount,
+        topologyEdgeCount: this.currentTopologyEdgeCount,
+        topologyIntersectionSplits: this.currentTopologyIntersectionSplits,
+        topologyDroppedSegments: this.currentTopologyDroppedSegments,
+        topologyStitchedNodes: this.currentTopologyStitchedNodes,
       });
 
       this.frameHandle = window.requestAnimationFrame(animate);
@@ -271,9 +284,16 @@ export class App {
           return;
         }
 
+        const topology = this.topologyRegistry.upsertTile(result.data);
         this.currentTileDataStatus = `${result.source} ${requestTileKey}`;
         this.currentTileRoadsCount = result.data.roads.length;
         this.currentTileBuildingsCount = result.data.buildings.length;
+        this.currentTopologyNodeCount = topology.nodes.length;
+        this.currentTopologyEdgeCount = topology.edges.length;
+        this.currentTopologyIntersectionSplits = topology.stats.intersectionSplits;
+        this.currentTopologyDroppedSegments =
+          topology.stats.droppedDegenerateRoads + topology.stats.droppedZeroLengthSegments;
+        this.currentTopologyStitchedNodes = topology.stats.stitchedNodes;
       })
       .catch((error: unknown) => {
         if (this.lastTileDataRequestKey !== requestTileKey) {

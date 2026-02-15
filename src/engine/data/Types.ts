@@ -42,6 +42,7 @@ export interface TileOSMData {
   readonly sourceEndpoint: string;
   readonly fetchedAt: number;
   readonly bbox: GeoBoundsLatLon;
+  readonly tileOriginGlobalMeters: PointMeters;
   readonly roads: readonly RoadFeature[];
   readonly buildings: readonly BuildingFeature[];
 }

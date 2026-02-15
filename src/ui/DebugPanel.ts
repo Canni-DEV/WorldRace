@@ -10,6 +10,11 @@ export interface DebugPanelMetrics {
   tileDataStatus: string;
   tileRoadsCount: number;
   tileBuildingsCount: number;
+  topologyNodeCount: number;
+  topologyEdgeCount: number;
+  topologyIntersectionSplits: number;
+  topologyDroppedSegments: number;
+  topologyStitchedNodes: number;
 }
 
 export class DebugPanel {
@@ -22,6 +27,8 @@ export class DebugPanel {
   private readonly recenterElement: HTMLParagraphElement;
   private readonly tileDataStatusElement: HTMLParagraphElement;
   private readonly tileDataCountsElement: HTMLParagraphElement;
+  private readonly topologyCountsElement: HTMLParagraphElement;
+  private readonly topologyStatsElement: HTMLParagraphElement;
   private readonly drawCallsElement: HTMLParagraphElement;
   private readonly trianglesElement: HTMLParagraphElement;
 
@@ -57,6 +64,12 @@ export class DebugPanel {
     this.tileDataCountsElement = document.createElement('p');
     this.tileDataCountsElement.className = 'overlay-row';
 
+    this.topologyCountsElement = document.createElement('p');
+    this.topologyCountsElement.className = 'overlay-row';
+
+    this.topologyStatsElement = document.createElement('p');
+    this.topologyStatsElement.className = 'overlay-row';
+
     this.drawCallsElement = document.createElement('p');
     this.drawCallsElement.className = 'overlay-row';
 
@@ -73,6 +86,8 @@ export class DebugPanel {
       this.recenterElement,
       this.tileDataStatusElement,
       this.tileDataCountsElement,
+      this.topologyCountsElement,
+      this.topologyStatsElement,
       this.drawCallsElement,
       this.trianglesElement,
     );
@@ -90,6 +105,11 @@ export class DebugPanel {
       tileDataStatus: 'idle',
       tileRoadsCount: 0,
       tileBuildingsCount: 0,
+      topologyNodeCount: 0,
+      topologyEdgeCount: 0,
+      topologyIntersectionSplits: 0,
+      topologyDroppedSegments: 0,
+      topologyStitchedNodes: 0,
     });
   }
 
@@ -102,6 +122,8 @@ export class DebugPanel {
     this.recenterElement.textContent = `Floating recenter: ${metrics.floatingOriginRecenters}`;
     this.tileDataStatusElement.textContent = `Tile data: ${metrics.tileDataStatus}`;
     this.tileDataCountsElement.textContent = `Current payload: ${metrics.tileRoadsCount} roads | ${metrics.tileBuildingsCount} buildings`;
+    this.topologyCountsElement.textContent = `Topology: ${metrics.topologyNodeCount} nodes | ${metrics.topologyEdgeCount} edges`;
+    this.topologyStatsElement.textContent = `Topology stats: splits ${metrics.topologyIntersectionSplits} | dropped ${metrics.topologyDroppedSegments} | stitched ${metrics.topologyStitchedNodes}`;
     this.drawCallsElement.textContent = `Draw calls: ${metrics.drawCalls}`;
     this.trianglesElement.textContent = `Triangles: ${metrics.triangles}`;
   }

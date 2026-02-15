@@ -81,20 +81,21 @@
 
 ### PR-04: Topology pipeline for road fidelity
 **Goal:** convert raw ways into robust road graph with clean geometry.
+**Status:** implemented locally.
 
 **Checklist**
-- [ ] Build road graph from OSM ways and nodes.
-- [ ] Split ways at true intersections and shared nodes.
-- [ ] Deduplicate near-coincident nodes using tolerance.
-- [ ] Preserve original centerline for gameplay/reference path.
-- [ ] Add optional visual smoothing path, separate from canonical geometry.
-- [ ] Implement tile border stitching to keep continuity across neighbors.
-- [ ] Validate and repair invalid segments (self overlaps, zero-length edges).
+- [x] Build road graph from OSM ways and nodes.
+- [x] Split ways at true intersections and shared nodes.
+- [x] Deduplicate near-coincident nodes using tolerance.
+- [x] Preserve original centerline for gameplay/reference path.
+- [x] Add optional visual smoothing path, separate from canonical geometry.
+- [x] Implement tile border stitching to keep continuity across neighbors.
+- [x] Validate and repair invalid segments (self overlaps, zero-length edges).
 
 **Acceptance**
-- [ ] Road graph continuity survives tile boundaries.
-- [ ] Canonical centerline remains spatially close to OSM geometry.
-- [ ] Invalid/degenerate segments are dropped or fixed deterministically.
+- [x] Road graph continuity survives tile boundaries.
+- [x] Canonical centerline remains spatially close to OSM geometry.
+- [x] Invalid/degenerate segments are dropped or fixed deterministically.
 
 ---
 
