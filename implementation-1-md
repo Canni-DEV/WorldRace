@@ -1,0 +1,276 @@
+# Implementation Checklist v1 (PoC Single-Player, Static Web)
+
+## Scope and hard constraints
+- [ ] Runtime is 100% browser, deploy only on GitHub Pages (no backend).
+- [ ] Experience is strictly single-player local (no network sync, no multiplayer hooks).
+- [ ] Public APIs only, no API keys.
+- [ ] Local persistence in IndexedDB (Cache Storage optional).
+- [ ] World stream must scale by tiles and be camera-anchor driven.
+- [ ] Road layout fidelity to OSM is top priority (1:1 in plan view).
+
+## Global architecture goals
+- [ ] Implement layered pipeline: `Data -> Topology -> Mesh Build -> Render -> Stream`.
+- [ ] Keep modules isolated by responsibility to avoid cross-layer coupling.
+- [ ] Add schema/versioning strategy for cached payloads.
+- [ ] Add deterministic seed strategy per tile for decoration stability.
+- [ ] Add performance budget per tile (build time, triangles, memory).
+
+## PR plan (practical order)
+
+### PR-01: Foundation and deploy baseline
+**Goal:** runnable app, quality gates, and deploy path.
+
+**Checklist**
+- [ ] Bootstrap Vite + TypeScript + Three.js app shell.
+- [ ] Add lint + format + typecheck scripts.
+- [ ] Add GitHub Actions workflow for build and GitHub Pages deploy.
+- [ ] Add HUD placeholder and debug overlay scaffold.
+- [ ] Add attribution page in `public/attribution/osm.html`.
+
+**Acceptance**
+- [ ] Public Pages URL serves app.
+- [ ] CI enforces lint, typecheck, and build.
+- [ ] Empty scene renders with stable camera loop.
+
+---
+
+### PR-02: Geo core, anchor, and tile system
+**Goal:** deterministic world coordinates and tile addressing.
+
+**Checklist**
+- [ ] Implement local projection (`lat/lon <-> local meters`) with explicit origin.
+- [ ] Implement `floating origin` recentering threshold and scene shift.
+- [ ] Implement tile keying by metric tile size (configurable 256m/512m).
+- [ ] Implement active/prefetch radius computation.
+- [ ] Implement camera anchor abstraction (`Anchor`), independent from controller.
+- [ ] Implement on-screen debug for current tile and desired tile set.
+
+**Acceptance**
+- [ ] Moving camera updates tile key and desired ring correctly.
+- [ ] Recenter event keeps numerical stability after long displacement.
+- [ ] Tile grid debug aligns with projected coordinates.
+
+---
+
+### PR-03: Overpass data layer + cache v1
+**Goal:** robust fetch and local persistence.
+
+**Checklist**
+- [ ] Implement Overpass client with:
+- [ ] Single-flight throttling (max 1 active request).
+- [ ] Retry with exponential backoff and jitter.
+- [ ] Endpoint fallback list with round-robin.
+- [ ] Query builder per tile bbox for `highway=*` and `building=*`.
+- [ ] Normalize Overpass response into compact `TileOSMData` schema.
+- [ ] Implement IndexedDB stores:
+- [ ] `raw_query_cache`
+- [ ] `normalized_tile_cache`
+- [ ] Add versioned cache key: `tileKey + schemaVersion + sourceVersion`.
+- [ ] Add TTL + LRU eviction policy.
+- [ ] Add `stale-while-revalidate` path (non-blocking refresh).
+
+**Acceptance**
+- [ ] First load fetches remote; reload uses cache hit.
+- [ ] Rate-limit safe behavior under rapid tile requests.
+- [ ] Cache metrics shown in HUD (hits/misses, age, store size).
+
+---
+
+### PR-04: Topology pipeline for road fidelity
+**Goal:** convert raw ways into robust road graph with clean geometry.
+
+**Checklist**
+- [ ] Build road graph from OSM ways and nodes.
+- [ ] Split ways at true intersections and shared nodes.
+- [ ] Deduplicate near-coincident nodes using tolerance.
+- [ ] Preserve original centerline for gameplay/reference path.
+- [ ] Add optional visual smoothing path, separate from canonical geometry.
+- [ ] Implement tile border stitching to keep continuity across neighbors.
+- [ ] Validate and repair invalid segments (self overlaps, zero-length edges).
+
+**Acceptance**
+- [ ] Road graph continuity survives tile boundaries.
+- [ ] Canonical centerline remains spatially close to OSM geometry.
+- [ ] Invalid/degenerate segments are dropped or fixed deterministically.
+
+---
+
+### PR-05: Road mesher (core) + basic collisions
+**Goal:** first playable road surfaces with accurate width handling.
+
+**Checklist**
+- [ ] Implement lane/width resolver priority:
+- [ ] `width` tag
+- [ ] else `lanes * defaultLaneWidth`
+- [ ] else highway-class fallback
+- [ ] Build left/right offsets per segment from centerline.
+- [ ] Triangulate ribbon mesh with robust segment joins.
+- [ ] Implement UV mapping by accumulated length.
+- [ ] Add asphalt material and wire/debug view toggles.
+- [ ] Build simplified collision mesh from road surface.
+
+**Acceptance**
+- [ ] Roads visible and contiguous inside tile.
+- [ ] Width heuristics match expected classes and tags.
+- [ ] Collision surface aligns with render mesh.
+
+---
+
+### PR-06: Road intersections (junction meshing)
+**Goal:** remove visual breaks at crossings and merges.
+
+**Checklist**
+- [ ] Build junction polygons by sorting branch edges by angle.
+- [ ] Resolve join style policy (`miter`, `bevel`, fallback by angle threshold).
+- [ ] Triangulate junction fill and weld with incoming ribbons.
+- [ ] Add turn pocket handling for acute intersections (simple fallback allowed).
+- [ ] Add seam suppression and normal/tangent consistency checks.
+- [ ] Add geometry diagnostics for failed triangulation cases.
+
+**Acceptance**
+- [ ] Major intersections render without cracks/holes.
+- [ ] No z-fighting at standard crossing cases.
+- [ ] Junction failures fall back gracefully without app crash.
+
+---
+
+### PR-07: Streaming runtime + workers + disposal
+**Goal:** stable load/unload loop around anchor.
+
+**Checklist**
+- [ ] Implement `WorldStream` desired/active tile diff each frame tick.
+- [ ] Load queue with priorities (center tile > near ring > prefetch ring).
+- [ ] Build queue offloaded to Web Worker(s) where practical.
+- [ ] Add cancellation for obsolete tiles when anchor moves fast.
+- [ ] Implement strict disposal of geometries/materials/textures on unload.
+- [ ] Add runtime metrics: fetch ms, build ms, GPU objects, approx memory.
+
+**Acceptance**
+- [ ] Fly-through loads new tiles and unloads old tiles without leaks.
+- [ ] FPS remains stable under continuous movement.
+- [ ] No unbounded growth in geometry/material counts.
+
+---
+
+### PR-08: Building pipeline (data + meshing + LOD)
+**Goal:** urban massing from OSM buildings.
+
+**Checklist**
+- [ ] Parse building polygons and multipolygons (with holes).
+- [ ] Resolve building height priority:
+- [ ] `height`
+- [ ] else `building:levels * 3m`
+- [ ] else class default
+- [ ] Triangulate footprint and extrude walls/roof (flat first).
+- [ ] Add optional simple roof variants from tags (gabled fallback).
+- [ ] Implement LOD:
+- [ ] LOD0 full extrusion near
+- [ ] LOD1 simplified box/hull far
+- [ ] Add instancing path for far simplified masses.
+
+**Acceptance**
+- [ ] Buildings appear aligned to map footprints.
+- [ ] Height estimates are deterministic and reproducible.
+- [ ] LOD swaps without visible popping artifacts above threshold.
+
+---
+
+### PR-09: Decoration layer (natural + urban props)
+**Goal:** lightweight environmental context without harming fidelity/perf.
+
+**Checklist**
+- [ ] Add deterministic seeded placement per tile.
+- [ ] Support direct OSM natural features (example: `natural=tree` points).
+- [ ] Support area decoration masks (forest/park/scrub) via Poisson sampling.
+- [ ] Add exclusion masks to avoid roads/buildings overlap.
+- [ ] Add simple stylized assets (trees, lamps, signs, benches) with instancing.
+- [ ] Add distance-based density scaling and culling bands.
+
+**Acceptance**
+- [ ] Decoration is stable across reloads (same seed -> same placement).
+- [ ] Props never invade drivable surface or building interiors.
+- [ ] Decoration can be toggled and budgeted from debug panel.
+
+---
+
+### PR-10: Local editor and override persistence
+**Goal:** non-destructive local edits on top of OSM base data.
+
+**Checklist**
+- [ ] Add `TileOverrides` store in IndexedDB.
+- [ ] Define override operations:
+- [ ] Add/remove/move prop
+- [ ] Override building height
+- [ ] Override local road width segment
+- [ ] Optional vegetation paint erase/add
+- [ ] Compose final scene data as `Base + Overrides`.
+- [ ] Add minimal editor UI (select, move, delete, save).
+- [ ] Add import/export JSON for local backups and sharing.
+- [ ] Add conflict handling when base tile schema version changes.
+
+**Acceptance**
+- [ ] Edits persist across reload.
+- [ ] Export/import roundtrip reproduces same edited scene.
+- [ ] Failed override application degrades safely (logs + skip).
+
+---
+
+### PR-11: Track generation from real roads
+**Goal:** convert road graph into playable race route.
+
+**Checklist**
+- [ ] Build navigable graph from canonical road topology.
+- [ ] Add route modes:
+- [ ] A->B shortest/weighted path
+- [ ] Loop route (cycle search with min/max length)
+- [ ] Convert route edges to spline path.
+- [ ] Apply smoothing with strict deviation cap from canonical centerline.
+- [ ] Generate checkpoints and route metadata.
+- [ ] Add UI action: `Generate Track From Real Roads`.
+- [ ] Add debug overlays: selected edges, spline, checkpoints.
+
+**Acceptance**
+- [ ] Button generates valid route in loaded area.
+- [ ] Route remains on roads with bounded geometric error.
+- [ ] Checkpoints ordered and complete for lap progression logic.
+
+---
+
+### PR-12: Offline area preload, hardening, and demo readiness
+**Goal:** deliver robust public PoC.
+
+**Checklist**
+- [ ] Add `Download Area` pre-cache flow for configurable radius.
+- [ ] Add offline-ready indicator per tile ring.
+- [ ] Add startup recovery for partial/corrupt cached entries.
+- [ ] Add stress test pass for long fly-through sessions.
+- [ ] Add release build profiling and final asset budget review.
+- [ ] Finalize public demo UX copy and attribution links.
+
+**Acceptance**
+- [ ] Previously downloaded area works without network access.
+- [ ] No critical errors in cold/warm/offline startup scenarios.
+- [ ] Public demo meets baseline FPS/memory budgets.
+
+## Cross-PR quality gates (must pass continuously)
+- [ ] TypeScript strict mode clean, zero `any` except explicitly documented boundary adapters.
+- [ ] Deterministic behavior for tile processing and decoration seeds.
+- [ ] Every PR includes perf notes (CPU/GPU/memory delta).
+- [ ] Every PR includes debug toggles for the new subsystem.
+- [ ] Every PR includes failure-path handling (timeouts, invalid geometry, cache corruption).
+
+## Suggested test matrix
+- [ ] Unit: projection, tile math, width resolver, graph builders, cache key/version logic.
+- [ ] Property tests: geometry validity (non-zero areas, manifold-ish junction meshes).
+- [ ] Integration: fetch->normalize->build->render->dispose for one tile and tile rings.
+- [ ] Soak: 20+ min continuous movement without memory growth trend.
+- [ ] Offline: cached area available after hard refresh with network disabled.
+
+## Final PoC deliverables checklist
+- [ ] Public GitHub Pages demo URL.
+- [ ] Free-fly camera with tile streaming.
+- [ ] Roads + intersections + buildings visible and stable.
+- [ ] Decoration layer present and toggleable.
+- [ ] IndexedDB cache with metrics panel.
+- [ ] Local editor + override persistence.
+- [ ] `Generate Track From Real Roads` operational.
