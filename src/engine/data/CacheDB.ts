@@ -1,4 +1,4 @@
-export type CacheStoreName = 'raw_query_cache' | 'normalized_tile_cache';
+export type CacheStoreName = 'raw_query_cache' | 'normalized_tile_cache' | 'meta_tile_cache';
 
 export interface CacheEnvelope<TPayload> {
   readonly key: string;
@@ -23,7 +23,7 @@ interface CacheEnvelopeMeta {
 }
 
 const DATABASE_NAME = 'worldrace-cache';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 
 export class CacheDB {
   private databasePromise: Promise<IDBDatabase> | null = null;
@@ -144,6 +144,10 @@ export class CacheDB {
 
         if (!database.objectStoreNames.contains('normalized_tile_cache')) {
           database.createObjectStore('normalized_tile_cache', { keyPath: 'key' });
+        }
+
+        if (!database.objectStoreNames.contains('meta_tile_cache')) {
+          database.createObjectStore('meta_tile_cache', { keyPath: 'key' });
         }
       };
 

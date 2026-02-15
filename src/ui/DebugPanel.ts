@@ -29,7 +29,9 @@ export interface DebugPanelMetrics {
   streamInflightBuilds: number;
   streamLastFetchMs: number;
   streamLastBuildMs: number;
-  streamCanceledLoads: number;
+  streamCanceledObsoleteLoads: number;
+  streamDeferredPrefetchLoads: number;
+  streamSkippedPrefetchBecauseForeground: number;
   streamDisposedTiles: number;
   streamFetchErrors: number;
   streamBuildErrors: number;
@@ -191,7 +193,9 @@ export class DebugPanel {
       streamInflightBuilds: 0,
       streamLastFetchMs: 0,
       streamLastBuildMs: 0,
-      streamCanceledLoads: 0,
+      streamCanceledObsoleteLoads: 0,
+      streamDeferredPrefetchLoads: 0,
+      streamSkippedPrefetchBecauseForeground: 0,
       streamDisposedTiles: 0,
       streamFetchErrors: 0,
       streamBuildErrors: 0,
@@ -219,7 +223,7 @@ export class DebugPanel {
     this.roadDebugElement.textContent = `Road debug: ${metrics.roadDebugOverlayEnabled ? 'on' : 'off'} | rendered tiles ${metrics.renderedRoadTiles}`;
     this.streamQueueElement.textContent = `Stream queue: desired ${metrics.streamDesiredTiles} | loaded ${metrics.streamLoadedTiles} | pending ${metrics.streamPendingTiles} | fetch ${metrics.streamInflightFetches} | build ${metrics.streamInflightBuilds}`;
     this.streamTimingElement.textContent = `Stream timings: fetch ${metrics.streamLastFetchMs.toFixed(1)} ms | build ${metrics.streamLastBuildMs.toFixed(1)} ms | mode ${metrics.streamBuildMode}`;
-    this.streamReliabilityElement.textContent = `Stream reliability: cancel ${metrics.streamCanceledLoads} | disposed ${metrics.streamDisposedTiles} | errors f/b ${metrics.streamFetchErrors}/${metrics.streamBuildErrors}`;
+    this.streamReliabilityElement.textContent = `Stream reliability: canceled_obsolete ${metrics.streamCanceledObsoleteLoads} | deferred_prefetch ${metrics.streamDeferredPrefetchLoads} | skipped_focus ${metrics.streamSkippedPrefetchBecauseForeground} | disposed ${metrics.streamDisposedTiles} | errors f/b ${metrics.streamFetchErrors}/${metrics.streamBuildErrors}`;
     this.streamMemoryElement.textContent = `Stream memory: mesh approx ${metrics.streamApproxMeshMegabytes.toFixed(2)} MB`;
     this.gpuResourcesElement.textContent = `GPU resources: geometries ${metrics.gpuGeometries} | textures ${metrics.gpuTextures}`;
     this.drawCallsElement.textContent = `Draw calls: ${metrics.drawCalls}`;

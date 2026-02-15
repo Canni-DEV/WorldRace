@@ -131,7 +131,8 @@ export class App {
         maxConcurrentFetches: runtimeConfig.streamMaxConcurrentFetches,
         useBuildWorker: runtimeConfig.streamUseBuildWorker,
         prefetchRequestIntervalMs: runtimeConfig.streamPrefetchRequestIntervalMs,
-        prefetchFocusDelayMs: runtimeConfig.streamPrefetchFocusDelayMs,
+        prefetchDeferMsWhenForegroundIncomplete:
+          runtimeConfig.streamPrefetchDeferMsWhenForegroundIncomplete,
       },
     );
 
@@ -223,7 +224,9 @@ export class App {
         streamInflightBuilds: streamSnapshot.inflightBuilds,
         streamLastFetchMs: streamSnapshot.lastFetchMs,
         streamLastBuildMs: streamSnapshot.lastBuildMs,
-        streamCanceledLoads: streamSnapshot.canceledLoads,
+        streamCanceledObsoleteLoads: streamSnapshot.canceledObsoleteLoads,
+        streamDeferredPrefetchLoads: streamSnapshot.deferredPrefetchLoads,
+        streamSkippedPrefetchBecauseForeground: streamSnapshot.skippedPrefetchBecauseForeground,
         streamDisposedTiles: streamSnapshot.disposedTiles,
         streamFetchErrors: streamSnapshot.fetchErrors,
         streamBuildErrors: streamSnapshot.buildErrors,
@@ -393,6 +396,7 @@ export class App {
 
   private createTileFetchParams(currentTile: TileCoordinate, tileKey: string): TileFetchParams {
     const globalBounds = this.tileSystem.getTileBoundsGlobalMeters(currentTile);
+    const tileSizeMeters = this.tileSystem.getTileSizeMeters();
     const southWest = this.globalMetersToLatLon(globalBounds.minEast, globalBounds.minNorth);
     const northEast = this.globalMetersToLatLon(globalBounds.maxEast, globalBounds.maxNorth);
 
@@ -407,6 +411,11 @@ export class App {
       tileOriginGlobalMeters: {
         east: globalBounds.minEast,
         north: globalBounds.minNorth,
+      },
+      tileSizeMeters,
+      tileCoordinate: {
+        x: currentTile.x,
+        y: currentTile.y,
       },
     };
   }
