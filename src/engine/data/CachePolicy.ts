@@ -2,12 +2,14 @@ import type { CacheDB, CacheStoreName } from './CacheDB';
 
 export interface CachePolicyConfig {
   readonly normalizedStoreMaxEntries: number;
+  readonly metaStoreMaxEntries: number;
   readonly rawStoreMaxEntries: number;
   readonly ttlMs: number;
 }
 
 export const defaultCachePolicyConfig: CachePolicyConfig = {
   normalizedStoreMaxEntries: 500,
+  metaStoreMaxEntries: 180,
   rawStoreMaxEntries: 150,
   ttlMs: 7 * 24 * 60 * 60 * 1000,
 };
@@ -27,6 +29,7 @@ export class CachePolicy {
 
   public async applyCleanup(now: number): Promise<void> {
     await this.cleanupStore('normalized_tile_cache', this.config.normalizedStoreMaxEntries, now);
+    await this.cleanupStore('meta_tile_cache', this.config.metaStoreMaxEntries, now);
     await this.cleanupStore('raw_query_cache', this.config.rawStoreMaxEntries, now);
   }
 

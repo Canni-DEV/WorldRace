@@ -36,6 +36,12 @@ export interface BuildingFeature {
   readonly properties: BuildingProperties;
 }
 
+export type TileEmptyReason =
+  | 'not-empty'
+  | 'real-empty'
+  | 'suspect-empty-confirmed'
+  | 'suspect-empty-recovered';
+
 export interface TileOSMData {
   readonly tileKey: string;
   readonly schemaVersion: string;
@@ -46,17 +52,30 @@ export interface TileOSMData {
   readonly tileOriginGlobalMeters: PointMeters;
   readonly roads: readonly RoadFeature[];
   readonly buildings: readonly BuildingFeature[];
+  readonly emptyReason: TileEmptyReason;
 }
 
 export interface TileFetchParams {
   readonly tileKey: string;
   readonly bbox: GeoBoundsLatLon;
   readonly tileOriginGlobalMeters: PointMeters;
+  readonly tileSizeMeters: number;
+  readonly tileCoordinate: {
+    readonly x: number;
+    readonly y: number;
+  };
 }
 
 export interface TileFetchResult {
   readonly data: TileOSMData;
   readonly source: 'network' | 'cache-fresh' | 'cache-stale';
+}
+
+export type TileFetchPriority = 'foreground' | 'background';
+
+export interface TileFetchOptions {
+  readonly signal?: AbortSignal;
+  readonly priority?: TileFetchPriority;
 }
 
 export interface CacheMetricsSnapshot {

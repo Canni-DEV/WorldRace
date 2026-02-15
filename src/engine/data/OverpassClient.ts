@@ -1,4 +1,4 @@
-import type { GeoBoundsLatLon } from './Types';
+import type { GeoBoundsLatLon, TileFetchPriority } from './Types';
 
 interface OverpassResponse {
   readonly version?: number;
@@ -43,9 +43,24 @@ export interface OverpassFetchResult {
 
 export interface OverpassClientConfig {
   readonly endpoints: readonly string[];
-  readonly timeoutMs: number;
+  readonly timeoutMsForeground: number;
+  readonly timeoutMsBackground: number;
   readonly maxRetries: number;
   readonly baseBackoffMs: number;
+  readonly circuitBreakerBaseCooldownMs: number;
+  readonly circuitBreakerMaxCooldownMs: number;
+  readonly stickyEndpointEnabled: boolean;
+}
+
+export interface OverpassFetchOptions {
+  readonly signal?: AbortSignal;
+  readonly priority?: TileFetchPriority;
+}
+
+interface EndpointHealthState {
+  consecutiveFailures: number;
+  cooldownUntilMs: number;
+  avgLatencyMs: number;
 }
 
 const defaultConfig: OverpassClientConfig = {
@@ -54,53 +69,78 @@ const defaultConfig: OverpassClientConfig = {
     'https://overpass.kumi.systems/api/interpreter',
     'https://overpass.openstreetmap.ru/api/interpreter',
   ],
-  timeoutMs: 18000,
+  timeoutMsForeground: 12000,
+  timeoutMsBackground: 20000,
   maxRetries: 2,
   baseBackoffMs: 500,
+  circuitBreakerBaseCooldownMs: 2000,
+  circuitBreakerMaxCooldownMs: 30000,
+  stickyEndpointEnabled: true,
 };
 
 export class OverpassClient {
   private readonly config: OverpassClientConfig;
-  private endpointCursor = 0;
-  private requestQueue: Promise<void> = Promise.resolve();
+  private stickyEndpointIndex = 0;
+  private readonly endpointHealthByIndex = new Map<number, EndpointHealthState>();
 
   public constructor(config: Partial<OverpassClientConfig> = {}) {
     const endpoints = config.endpoints ?? defaultConfig.endpoints;
     this.config = {
       endpoints,
-      timeoutMs: config.timeoutMs ?? defaultConfig.timeoutMs,
+      timeoutMsForeground: config.timeoutMsForeground ?? defaultConfig.timeoutMsForeground,
+      timeoutMsBackground: config.timeoutMsBackground ?? defaultConfig.timeoutMsBackground,
       maxRetries: config.maxRetries ?? defaultConfig.maxRetries,
       baseBackoffMs: config.baseBackoffMs ?? defaultConfig.baseBackoffMs,
+      circuitBreakerBaseCooldownMs:
+        config.circuitBreakerBaseCooldownMs ?? defaultConfig.circuitBreakerBaseCooldownMs,
+      circuitBreakerMaxCooldownMs:
+        config.circuitBreakerMaxCooldownMs ?? defaultConfig.circuitBreakerMaxCooldownMs,
+      stickyEndpointEnabled: config.stickyEndpointEnabled ?? defaultConfig.stickyEndpointEnabled,
     };
+
+    endpoints.forEach((_endpoint, index) => {
+      this.endpointHealthByIndex.set(index, {
+        consecutiveFailures: 0,
+        cooldownUntilMs: 0,
+        avgLatencyMs: 1000,
+      });
+    });
   }
 
-  public fetchTileData(bounds: GeoBoundsLatLon): Promise<OverpassFetchResult> {
-    return this.enqueue(async () => this.fetchTileDataWithRetry(bounds));
+  public fetchTileData(bounds: GeoBoundsLatLon, options: OverpassFetchOptions = {}): Promise<OverpassFetchResult> {
+    return this.fetchTileDataWithRetry(bounds, options);
   }
 
-  private async enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const runOperation = this.requestQueue.then(operation, operation);
-    this.requestQueue = runOperation.then(
-      () => undefined,
-      () => undefined,
-    );
-    return runOperation;
-  }
-
-  private async fetchTileDataWithRetry(bounds: GeoBoundsLatLon): Promise<OverpassFetchResult> {
+  private async fetchTileDataWithRetry(
+    bounds: GeoBoundsLatLon,
+    options: OverpassFetchOptions,
+  ): Promise<OverpassFetchResult> {
     const query = this.buildQuery(bounds);
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt <= this.config.maxRetries; attempt += 1) {
-      const endpoint = this.pickEndpoint();
+      if (options.signal?.aborted === true) {
+        throw this.createAbortError();
+      }
+
+      const endpointSelection = this.pickEndpoint();
+      const endpoint = endpointSelection.endpoint;
       try {
-        const response = await this.executeRequest(endpoint, query);
+        const startedAtMs = performance.now();
+        const response = await this.executeRequest(endpoint, query, options);
+        const latencyMs = performance.now() - startedAtMs;
+        this.recordEndpointSuccess(endpointSelection.index, latencyMs);
         return {
           endpoint,
           response,
           fetchedAt: Date.now(),
         };
       } catch (error) {
+        if (this.isAbortError(error)) {
+          throw this.createAbortError();
+        }
+
+        this.recordEndpointFailure(endpointSelection.index);
         lastError = error instanceof Error ? error : new Error('Unknown Overpass error');
         const isLastAttempt = attempt >= this.config.maxRetries;
         if (isLastAttempt) {
@@ -108,18 +148,35 @@ export class OverpassClient {
         }
 
         const backoffMs = this.config.baseBackoffMs * 2 ** attempt + this.randomJitter(200);
-        await this.delay(backoffMs);
+        await this.delay(backoffMs, options.signal);
       }
     }
 
     throw lastError ?? new Error('Overpass request failed without details.');
   }
 
-  private async executeRequest(endpoint: string, query: string): Promise<OverpassResponse> {
+  private async executeRequest(
+    endpoint: string,
+    query: string,
+    options: OverpassFetchOptions,
+  ): Promise<OverpassResponse> {
     const abortController = new AbortController();
+    const timeoutMs = this.getTimeoutMs(options.priority ?? 'foreground');
     const timeoutHandle = window.setTimeout(() => {
       abortController.abort();
-    }, this.config.timeoutMs);
+    }, timeoutMs);
+
+    const externalSignal = options.signal;
+    const onExternalAbort = (): void => {
+      abortController.abort();
+    };
+    if (externalSignal !== undefined) {
+      if (externalSignal.aborted) {
+        abortController.abort();
+      } else {
+        externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+      }
+    }
 
     try {
       const response = await fetch(endpoint, {
@@ -143,6 +200,7 @@ export class OverpassClient {
       return json;
     } finally {
       window.clearTimeout(timeoutHandle);
+      externalSignal?.removeEventListener('abort', onExternalAbort);
     }
   }
 
@@ -157,15 +215,88 @@ export class OverpassClient {
 out geom tags;`;
   }
 
-  private pickEndpoint(): string {
+  private pickEndpoint(): { readonly endpoint: string; readonly index: number } {
     const endpoints = this.config.endpoints;
     if (endpoints.length === 0) {
       throw new Error('Overpass client requires at least one endpoint.');
     }
 
-    const endpoint = endpoints[this.endpointCursor % endpoints.length];
-    this.endpointCursor = (this.endpointCursor + 1) % endpoints.length;
-    return endpoint;
+    const nowMs = Date.now();
+    if (this.config.stickyEndpointEnabled) {
+      const stickyState = this.endpointHealthByIndex.get(this.stickyEndpointIndex);
+      const stickyEndpoint = endpoints[this.stickyEndpointIndex];
+      if (stickyState !== undefined && stickyEndpoint !== undefined && nowMs >= stickyState.cooldownUntilMs) {
+        return {
+          endpoint: stickyEndpoint,
+          index: this.stickyEndpointIndex,
+        };
+      }
+    }
+
+    let selectedIndex = 0;
+    let selectedScore = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < endpoints.length; index += 1) {
+      const health = this.endpointHealthByIndex.get(index);
+      const endpoint = endpoints[index];
+      if (health === undefined || endpoint === undefined) {
+        continue;
+      }
+
+      const inCooldown = nowMs < health.cooldownUntilMs;
+      const cooldownPenalty = inCooldown ? 1_000_000 : 0;
+      const score = cooldownPenalty + health.avgLatencyMs + health.consecutiveFailures * 1000;
+      if (score < selectedScore) {
+        selectedScore = score;
+        selectedIndex = index;
+      }
+    }
+
+    return {
+      endpoint: endpoints[selectedIndex] ?? endpoints[0] ?? '',
+      index: selectedIndex,
+    };
+  }
+
+  private recordEndpointSuccess(endpointIndex: number, latencyMs: number): void {
+    const state = this.endpointHealthByIndex.get(endpointIndex);
+    if (state === undefined) {
+      return;
+    }
+
+    state.consecutiveFailures = 0;
+    state.cooldownUntilMs = 0;
+    state.avgLatencyMs = state.avgLatencyMs * 0.7 + latencyMs * 0.3;
+    this.stickyEndpointIndex = endpointIndex;
+  }
+
+  private recordEndpointFailure(endpointIndex: number): void {
+    const state = this.endpointHealthByIndex.get(endpointIndex);
+    if (state === undefined) {
+      return;
+    }
+
+    state.consecutiveFailures += 1;
+    const exponentialCooldown =
+      this.config.circuitBreakerBaseCooldownMs * 2 ** Math.max(0, state.consecutiveFailures - 1);
+    const cooldownMs = Math.min(this.config.circuitBreakerMaxCooldownMs, exponentialCooldown);
+    state.cooldownUntilMs = Date.now() + cooldownMs;
+  }
+
+  private getTimeoutMs(priority: TileFetchPriority): number {
+    return priority === 'foreground'
+      ? this.config.timeoutMsForeground
+      : this.config.timeoutMsBackground;
+  }
+
+  private isAbortError(error: unknown): boolean {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return true;
+    }
+    return error instanceof Error && error.name === 'AbortError';
+  }
+
+  private createAbortError(): DOMException {
+    return new DOMException('Request aborted.', 'AbortError');
   }
 
   private isOverpassResponse(value: unknown): value is OverpassResponse {
@@ -185,9 +316,25 @@ out geom tags;`;
     return Math.floor(Math.random() * maxMs);
   }
 
-  private delay(delayMs: number): Promise<void> {
-    return new Promise((resolve) => {
-      window.setTimeout(resolve, delayMs);
+  private delay(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted === true) {
+        reject(this.createAbortError());
+        return;
+      }
+
+      const timeoutHandle = window.setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, delayMs);
+
+      const onAbort = (): void => {
+        window.clearTimeout(timeoutHandle);
+        signal?.removeEventListener('abort', onAbort);
+        reject(this.createAbortError());
+      };
+
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 }

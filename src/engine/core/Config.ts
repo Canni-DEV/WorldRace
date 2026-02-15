@@ -11,7 +11,7 @@ export interface RuntimeConfig {
   readonly streamMaxConcurrentFetches: number;
   readonly streamUseBuildWorker: boolean;
   readonly streamPrefetchRequestIntervalMs: number;
-  readonly streamPrefetchFocusDelayMs: number;
+  readonly streamPrefetchDeferMsWhenForegroundIncomplete: number;
   readonly streamTileHysteresisMeters: number;
 }
 
@@ -28,6 +28,6 @@ export const runtimeConfig: RuntimeConfig = Object.freeze({
   streamMaxConcurrentFetches: 1,
   streamUseBuildWorker: true,
   streamPrefetchRequestIntervalMs: 650,
-  streamPrefetchFocusDelayMs: 250,
+  streamPrefetchDeferMsWhenForegroundIncomplete: 250,
   streamTileHysteresisMeters: 18,
 });

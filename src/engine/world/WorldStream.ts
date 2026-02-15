@@ -7,17 +7,31 @@ import type { RoadMeshStats } from './RoadMeshTypes';
 import type { TopologyRegistry } from './TopologyRegistry';
 
 type TileRingKind = 'active' | 'prefetch';
+type TilePriorityBand = 'focus' | 'near-active' | 'far-active' | 'prefetch';
+type InflightCancelReason = 'none' | 'obsolete' | 'preempted';
 
 interface DesiredTileEntry {
   readonly tile: TileCoordinate;
   readonly tileKey: string;
   readonly ringKind: TileRingKind;
-  readonly priority: number;
+  readonly priorityBand: TilePriorityBand;
+  readonly chebyshevDistance: number;
+  readonly manhattanDistance: number;
+  readonly priorityScore: number;
+}
+
+interface PendingTileEntry {
+  readonly desired: DesiredTileEntry;
+  readonly enqueueSequence: number;
+  readonly deferredUntilMs: number;
 }
 
 interface InflightTileEntry {
   readonly tile: TileCoordinate;
+  readonly priorityBand: TilePriorityBand;
   phase: 'fetch' | 'build';
+  abortController: AbortController | null;
+  cancelReason: InflightCancelReason;
 }
 
 interface LoadedTileEntry {
@@ -42,7 +56,7 @@ export interface WorldStreamConfig {
   readonly maxConcurrentFetches: number;
   readonly useBuildWorker: boolean;
   readonly prefetchRequestIntervalMs: number;
-  readonly prefetchFocusDelayMs: number;
+  readonly prefetchDeferMsWhenForegroundIncomplete: number;
 }
 
 export interface WorldStreamCurrentTileSnapshot {
@@ -65,7 +79,9 @@ export interface WorldStreamSnapshot {
   readonly pendingTiles: number;
   readonly inflightFetches: number;
   readonly inflightBuilds: number;
-  readonly canceledLoads: number;
+  readonly canceledObsoleteLoads: number;
+  readonly deferredPrefetchLoads: number;
+  readonly skippedPrefetchBecauseForeground: number;
   readonly disposedTiles: number;
   readonly fetchErrors: number;
   readonly buildErrors: number;
@@ -89,7 +105,7 @@ const defaultConfig: WorldStreamConfig = {
   maxConcurrentFetches: 1,
   useBuildWorker: true,
   prefetchRequestIntervalMs: 650,
-  prefetchFocusDelayMs: 250,
+  prefetchDeferMsWhenForegroundIncomplete: 250,
 };
 
 export class WorldStream {
@@ -102,23 +118,25 @@ export class WorldStream {
   private readonly maxConcurrentLoads: number;
   private readonly maxConcurrentFetches: number;
   private readonly prefetchRequestIntervalMs: number;
-  private readonly prefetchFocusDelayMs: number;
+  private readonly prefetchDeferMsWhenForegroundIncomplete: number;
 
   private readonly desiredByKey = new Map<string, DesiredTileEntry>();
-  private readonly pendingByKey = new Map<string, DesiredTileEntry>();
+  private readonly pendingByKey = new Map<string, PendingTileEntry>();
   private readonly inflightByKey = new Map<string, InflightTileEntry>();
   private readonly loadedByKey = new Map<string, LoadedTileEntry>();
   private currentTileKey = '';
   private status = 'idle';
-  private canceledLoads = 0;
+  private canceledObsoleteLoads = 0;
+  private deferredPrefetchLoads = 0;
+  private skippedPrefetchBecauseForeground = 0;
   private disposedTiles = 0;
   private fetchErrors = 0;
   private buildErrors = 0;
   private lastFetchMs = 0;
   private lastBuildMs = 0;
   private approxMeshBytes = 0;
-  private focusTileChangedAtMs = performance.now();
   private lastPrefetchDispatchAtMs = Number.NEGATIVE_INFINITY;
+  private nextPendingSequence = 1;
   private disposed = false;
 
   public constructor(
@@ -142,9 +160,10 @@ export class WorldStream {
       0,
       config.prefetchRequestIntervalMs ?? defaultConfig.prefetchRequestIntervalMs,
     );
-    this.prefetchFocusDelayMs = Math.max(
+    this.prefetchDeferMsWhenForegroundIncomplete = Math.max(
       0,
-      config.prefetchFocusDelayMs ?? defaultConfig.prefetchFocusDelayMs,
+      config.prefetchDeferMsWhenForegroundIncomplete ??
+        defaultConfig.prefetchDeferMsWhenForegroundIncomplete,
     );
     this.buildService = new RoadMeshBuildService({
       useWorker: config.useBuildWorker ?? defaultConfig.useBuildWorker,
@@ -156,14 +175,13 @@ export class WorldStream {
       return;
     }
 
-    const nextCurrentTileKey = this.tileSystem.getTileKey(currentTile);
-    if (nextCurrentTileKey !== this.currentTileKey) {
-      this.focusTileChangedAtMs = performance.now();
-    }
-    this.currentTileKey = nextCurrentTileKey;
+    this.currentTileKey = this.tileSystem.getTileKey(currentTile);
     this.reconcileDesiredTiles(currentTile, tileRings);
-    this.unloadTilesOutsideDesiredSet();
+    this.reconcilePendingTiles();
     this.enqueueMissingTiles();
+    this.abortStaleInflightFetches();
+    this.preemptLowerPriorityInflightFetches();
+    this.unloadTilesOutsideDesiredSet();
     this.pumpQueue();
   }
 
@@ -180,7 +198,9 @@ export class WorldStream {
       pendingTiles: this.pendingByKey.size,
       inflightFetches,
       inflightBuilds,
-      canceledLoads: this.canceledLoads,
+      canceledObsoleteLoads: this.canceledObsoleteLoads,
+      deferredPrefetchLoads: this.deferredPrefetchLoads,
+      skippedPrefetchBecauseForeground: this.skippedPrefetchBecauseForeground,
       disposedTiles: this.disposedTiles,
       fetchErrors: this.fetchErrors,
       buildErrors: this.buildErrors,
@@ -219,6 +239,12 @@ export class WorldStream {
       this.unloadTile(tileKey);
     }
 
+    for (const inflight of this.inflightByKey.values()) {
+      if (inflight.phase !== 'fetch') {
+        continue;
+      }
+      this.abortInflightFetch(inflight, 'obsolete');
+    }
     this.inflightByKey.clear();
     this.buildService.dispose();
   }
@@ -228,11 +254,19 @@ export class WorldStream {
 
     for (const tile of tileRings.activeTiles) {
       const tileKey = this.tileSystem.getTileKey(tile);
+      const distances = this.computeTileDistances(tile, currentTile);
       nextDesired.set(tileKey, {
         tile,
         tileKey,
         ringKind: 'active',
-        priority: this.computeTilePriority(tile, currentTile, 'active'),
+        priorityBand: this.resolvePriorityBand(distances.chebyshevDistance, 'active'),
+        chebyshevDistance: distances.chebyshevDistance,
+        manhattanDistance: distances.manhattanDistance,
+        priorityScore: this.computeTilePriorityScore(
+          this.resolvePriorityBand(distances.chebyshevDistance, 'active'),
+          distances.chebyshevDistance,
+          distances.manhattanDistance,
+        ),
       });
     }
 
@@ -241,11 +275,19 @@ export class WorldStream {
       if (nextDesired.has(tileKey)) {
         continue;
       }
+      const distances = this.computeTileDistances(tile, currentTile);
       nextDesired.set(tileKey, {
         tile,
         tileKey,
         ringKind: 'prefetch',
-        priority: this.computeTilePriority(tile, currentTile, 'prefetch'),
+        priorityBand: this.resolvePriorityBand(distances.chebyshevDistance, 'prefetch'),
+        chebyshevDistance: distances.chebyshevDistance,
+        manhattanDistance: distances.manhattanDistance,
+        priorityScore: this.computeTilePriorityScore(
+          this.resolvePriorityBand(distances.chebyshevDistance, 'prefetch'),
+          distances.chebyshevDistance,
+          distances.manhattanDistance,
+        ),
       });
     }
 
@@ -254,15 +296,21 @@ export class WorldStream {
       this.desiredByKey.set(tileKey, entry);
     }
 
-    for (const [pendingKey] of [...this.pendingByKey.entries()]) {
-      const desired = this.desiredByKey.get(pendingKey);
+  }
+
+  private reconcilePendingTiles(): void {
+    for (const [tileKey, pending] of [...this.pendingByKey.entries()]) {
+      const desired = this.desiredByKey.get(tileKey);
       if (desired === undefined) {
-        this.pendingByKey.delete(pendingKey);
+        this.pendingByKey.delete(tileKey);
         continue;
       }
 
-      // Re-prioritize every frame so the focus tile can overtake old prefetch entries.
-      this.pendingByKey.set(pendingKey, desired);
+      this.pendingByKey.set(tileKey, {
+        desired,
+        enqueueSequence: pending.enqueueSequence,
+        deferredUntilMs: desired.priorityBand === 'prefetch' ? pending.deferredUntilMs : 0,
+      });
     }
   }
 
@@ -271,7 +319,12 @@ export class WorldStream {
       if (this.pendingByKey.has(tileKey) || this.inflightByKey.has(tileKey) || this.loadedByKey.has(tileKey)) {
         continue;
       }
-      this.pendingByKey.set(tileKey, desired);
+      this.pendingByKey.set(tileKey, {
+        desired,
+        enqueueSequence: this.nextPendingSequence,
+        deferredUntilMs: 0,
+      });
+      this.nextPendingSequence += 1;
     }
   }
 
@@ -310,48 +363,82 @@ export class WorldStream {
         break;
       }
 
-      this.pendingByKey.delete(nextRequest.tileKey);
-      this.inflightByKey.set(nextRequest.tileKey, {
-        tile: nextRequest.tile,
+      this.pendingByKey.delete(nextRequest.desired.tileKey);
+      const abortController = new AbortController();
+      this.inflightByKey.set(nextRequest.desired.tileKey, {
+        tile: nextRequest.desired.tile,
+        priorityBand: nextRequest.desired.priorityBand,
         phase: 'fetch',
+        abortController,
+        cancelReason: 'none',
       });
 
-      if (nextRequest.ringKind === 'prefetch') {
+      if (nextRequest.desired.priorityBand === 'prefetch') {
         this.lastPrefetchDispatchAtMs = nowMs;
       }
-      void this.processTileLoad(nextRequest);
+      void this.processTileLoad(nextRequest.desired);
     }
   }
 
-  private dequeueNextPending(nowMs: number): DesiredTileEntry | null {
-    const allowPrefetch = this.canDispatchPrefetch(nowMs);
-    let selected: DesiredTileEntry | null = null;
-    for (const candidate of this.pendingByKey.values()) {
-      if (candidate.ringKind === 'prefetch' && !allowPrefetch) {
+  private dequeueNextPending(nowMs: number): PendingTileEntry | null {
+    const foregroundComplete = this.isForegroundComplete();
+    const canDispatchPrefetch = foregroundComplete && this.canDispatchPrefetchByBudget(nowMs);
+    let selected: PendingTileEntry | null = null;
+
+    for (const [tileKey, pending] of this.pendingByKey.entries()) {
+      if (nowMs < pending.deferredUntilMs) {
         continue;
       }
 
-      if (selected === null || candidate.priority < selected.priority) {
-        selected = candidate;
+      if (pending.desired.priorityBand === 'prefetch' && !canDispatchPrefetch) {
+        const deferredUntil = foregroundComplete
+          ? nowMs + this.prefetchRequestIntervalMs
+          : nowMs + this.prefetchDeferMsWhenForegroundIncomplete;
+        this.pendingByKey.set(tileKey, {
+          desired: pending.desired,
+          enqueueSequence: pending.enqueueSequence,
+          deferredUntilMs: deferredUntil,
+        });
+        this.deferredPrefetchLoads += 1;
+        if (!foregroundComplete) {
+          this.skippedPrefetchBecauseForeground += 1;
+        }
+        continue;
+      }
+
+      if (selected === null) {
+        selected = pending;
+        continue;
+      }
+
+      const selectedScore = selected.desired.priorityScore;
+      const candidateScore = pending.desired.priorityScore;
+      if (candidateScore < selectedScore) {
+        selected = pending;
+        continue;
+      }
+
+      if (candidateScore === selectedScore && pending.enqueueSequence < selected.enqueueSequence) {
+        selected = pending;
       }
     }
+
     return selected;
   }
 
-  private canDispatchPrefetch(nowMs: number): boolean {
-    if (!this.loadedByKey.has(this.currentTileKey)) {
-      return false;
+  private isForegroundComplete(): boolean {
+    for (const desired of this.desiredByKey.values()) {
+      if (desired.priorityBand === 'focus' || desired.priorityBand === 'near-active') {
+        if (!this.loadedByKey.has(desired.tileKey)) {
+          return false;
+        }
+      }
     }
-
-    if (nowMs - this.focusTileChangedAtMs < this.prefetchFocusDelayMs) {
-      return false;
-    }
-
-    if (nowMs - this.lastPrefetchDispatchAtMs < this.prefetchRequestIntervalMs) {
-      return false;
-    }
-
     return true;
+  }
+
+  private canDispatchPrefetchByBudget(nowMs: number): boolean {
+    return nowMs - this.lastPrefetchDispatchAtMs >= this.prefetchRequestIntervalMs;
   }
 
   private async processTileLoad(request: DesiredTileEntry): Promise<void> {
@@ -367,29 +454,28 @@ export class WorldStream {
     try {
       const desiredAtStart = this.desiredByKey.get(tileKey);
       if (this.disposed || desiredAtStart === undefined) {
-        this.canceledLoads += 1;
-        return;
-      }
-
-      if (desiredAtStart.ringKind === 'prefetch' && !this.canDispatchPrefetch(performance.now())) {
-        this.canceledLoads += 1;
-        this.pendingByKey.set(tileKey, desiredAtStart);
+        this.canceledObsoleteLoads += 1;
         return;
       }
 
       this.status = `loading fetch ${tileKey}`;
       const fetchParams = this.createTileFetchParams(request.tile, tileKey);
       const fetchStartedAt = performance.now();
-      fetched = await this.tileDataService.getOrFetchTile(fetchParams);
+      fetched = await this.tileDataService.getOrFetchTile(fetchParams, {
+        signal: inflightEntry.abortController?.signal,
+        priority: this.toFetchPriority(request.priorityBand),
+      });
       this.lastFetchMs = performance.now() - fetchStartedAt;
 
       if (this.disposed || !this.desiredByKey.has(tileKey)) {
-        this.canceledLoads += 1;
+        this.canceledObsoleteLoads += 1;
         return;
       }
 
       this.status = `loading build ${tileKey}`;
       inflightEntry.phase = 'build';
+      inflightEntry.abortController = null;
+      inflightEntry.cancelReason = 'none';
 
       const topology = this.topologyRegistry.upsertTile(fetched.data);
       topologyInserted = true;
@@ -398,7 +484,7 @@ export class WorldStream {
 
       if (this.disposed || !this.desiredByKey.has(tileKey)) {
         this.topologyRegistry.removeTile(tileKey);
-        this.canceledLoads += 1;
+        this.canceledObsoleteLoads += 1;
         return;
       }
 
@@ -437,6 +523,17 @@ export class WorldStream {
 
       this.status = `ready ${tileKey}`;
     } catch (error: unknown) {
+      if (this.isAbortError(error)) {
+        if (inflightEntry.cancelReason !== 'none') {
+          this.canceledObsoleteLoads += 1;
+        }
+        this.status = `canceled ${tileKey}`;
+        if (topologyInserted) {
+          this.topologyRegistry.removeTile(tileKey);
+        }
+        return;
+      }
+
       const message = error instanceof Error ? error.message : 'Unknown stream error.';
       if (inflightEntry.phase === 'fetch') {
         this.fetchErrors += 1;
@@ -456,31 +553,133 @@ export class WorldStream {
     }
   }
 
-  private computeTilePriority(
+  private computeTileDistances(
     tile: TileCoordinate,
     currentTile: TileCoordinate,
-    ringKind: TileRingKind,
-  ): number {
+  ): { readonly chebyshevDistance: number; readonly manhattanDistance: number } {
     const dx = Math.abs(tile.x - currentTile.x);
     const dy = Math.abs(tile.y - currentTile.y);
-    const chebyshevDistance = Math.max(dx, dy);
-    const manhattanDistance = dx + dy;
+    return {
+      chebyshevDistance: Math.max(dx, dy),
+      manhattanDistance: dx + dy,
+    };
+  }
 
-    // Hard focus policy:
-    // current tile > active ring-1 > other active > prefetch.
+  private resolvePriorityBand(
+    chebyshevDistance: number,
+    ringKind: TileRingKind,
+  ): TilePriorityBand {
     if (chebyshevDistance === 0) {
-      return 0;
+      return 'focus';
     }
 
     if (ringKind === 'active' && chebyshevDistance === 1) {
-      return 100 + manhattanDistance;
+      return 'near-active';
     }
 
     if (ringKind === 'active') {
-      return 200 + chebyshevDistance * 10 + manhattanDistance;
+      return 'far-active';
     }
 
-    return 1000 + chebyshevDistance * 10 + manhattanDistance;
+    return 'prefetch';
+  }
+
+  private computeTilePriorityScore(
+    priorityBand: TilePriorityBand,
+    chebyshevDistance: number,
+    manhattanDistance: number,
+  ): number {
+    const priorityBandWeight = this.getPriorityBandWeight(priorityBand);
+    return priorityBandWeight * 10000 + chebyshevDistance * 100 + manhattanDistance;
+  }
+
+  private getPriorityBandWeight(priorityBand: TilePriorityBand): number {
+    switch (priorityBand) {
+      case 'focus':
+        return 0;
+      case 'near-active':
+        return 1;
+      case 'far-active':
+        return 2;
+      case 'prefetch':
+      default:
+        return 3;
+    }
+  }
+
+  private abortStaleInflightFetches(): void {
+    for (const [tileKey, inflight] of this.inflightByKey.entries()) {
+      if (inflight.phase !== 'fetch') {
+        continue;
+      }
+      if (this.desiredByKey.has(tileKey)) {
+        continue;
+      }
+      this.abortInflightFetch(inflight, 'obsolete');
+    }
+  }
+
+  private preemptLowerPriorityInflightFetches(): void {
+    const targetPriorityScore = this.getMostUrgentForegroundPendingScore();
+    if (targetPriorityScore === null) {
+      return;
+    }
+
+    for (const [tileKey, inflight] of this.inflightByKey.entries()) {
+      if (inflight.phase !== 'fetch') {
+        continue;
+      }
+
+      const desired = this.desiredByKey.get(tileKey);
+      if (desired === undefined) {
+        this.abortInflightFetch(inflight, 'obsolete');
+        continue;
+      }
+
+      if (desired.priorityScore <= targetPriorityScore) {
+        continue;
+      }
+      this.abortInflightFetch(inflight, 'preempted');
+    }
+  }
+
+  private getMostUrgentForegroundPendingScore(): number | null {
+    let bestScore: number | null = null;
+    for (const pending of this.pendingByKey.values()) {
+      if (pending.desired.priorityBand === 'prefetch') {
+        continue;
+      }
+      if (bestScore === null || pending.desired.priorityScore < bestScore) {
+        bestScore = pending.desired.priorityScore;
+      }
+    }
+    return bestScore;
+  }
+
+  private abortInflightFetch(inflight: InflightTileEntry, reason: InflightCancelReason): void {
+    if (inflight.phase !== 'fetch') {
+      return;
+    }
+    if (inflight.abortController === null) {
+      return;
+    }
+    inflight.cancelReason = reason;
+    inflight.abortController.abort();
+    inflight.abortController = null;
+  }
+
+  private toFetchPriority(priorityBand: TilePriorityBand): 'foreground' | 'background' {
+    if (priorityBand === 'prefetch') {
+      return 'background';
+    }
+    return 'foreground';
+  }
+
+  private isAbortError(error: unknown): boolean {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return true;
+    }
+    return error instanceof Error && error.name === 'AbortError';
   }
 
   private countInflightByPhase(phase: 'fetch' | 'build'): number {
