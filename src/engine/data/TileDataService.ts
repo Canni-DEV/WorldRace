@@ -139,6 +139,7 @@ export class TileDataService {
   private readonly cacheDatabase: CacheDB;
   private readonly cachePolicy: CachePolicy;
   private readonly normalizationProjection: Projection;
+  private readonly sourceVersion: string;
   private readonly config: TileDataServiceConfig;
   private readonly inflightTileByKey = new Map<string, Promise<TileFetchResult>>();
   private readonly inflightMetaByKey = new Map<string, Promise<MetaTileFetchResult>>();
@@ -158,6 +159,7 @@ export class TileDataService {
 
   public constructor(normalizationProjection: Projection, config: Partial<TileDataServiceConfig> = {}) {
     this.normalizationProjection = normalizationProjection;
+    this.sourceVersion = `${OVERPASS_SOURCE_VERSION}::${this.normalizationProjection.getAxisOrientationKey()}`;
     this.overpassClient = new OverpassClient();
     this.cacheDatabase = new CacheDB();
     this.cachePolicy = new CachePolicy(this.cacheDatabase, {
@@ -573,7 +575,7 @@ export class TileDataService {
     return {
       metaTileKey: context.metaTileKey,
       schemaVersion: META_TILE_SCHEMA_VERSION,
-      sourceVersion: OVERPASS_SOURCE_VERSION,
+      sourceVersion: this.sourceVersion,
       sourceEndpoint: endpoint,
       fetchedAt,
       queryBounds: context.queryBounds,
@@ -742,7 +744,7 @@ export class TileDataService {
     return {
       tileKey: params.tileKey,
       schemaVersion: NORMALIZED_SCHEMA_VERSION,
-      sourceVersion: OVERPASS_SOURCE_VERSION,
+      sourceVersion: this.sourceVersion,
       sourceEndpoint: meta.sourceEndpoint,
       fetchedAt: meta.fetchedAt,
       bbox: params.bbox,
@@ -844,11 +846,11 @@ export class TileDataService {
   }
 
   private buildTileVersionedKey(tileKey: string): string {
-    return `${tileKey}::schema=${NORMALIZED_SCHEMA_VERSION}::source=${OVERPASS_SOURCE_VERSION}`;
+    return `${tileKey}::schema=${NORMALIZED_SCHEMA_VERSION}::source=${this.sourceVersion}`;
   }
 
   private buildMetaVersionedKey(metaTileKey: string, paddingMeters: number): string {
-    return `${metaTileKey}::schema=${META_TILE_SCHEMA_VERSION}::source=${OVERPASS_SOURCE_VERSION}::pad=${paddingMeters}`;
+    return `${metaTileKey}::schema=${META_TILE_SCHEMA_VERSION}::source=${this.sourceVersion}::pad=${paddingMeters}`;
   }
 
   private normalizeGeometryToGlobal(

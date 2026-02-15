@@ -13,13 +13,24 @@ export interface LocalMeters {
   readonly north: number;
 }
 
+export type AxisSign = 1 | -1;
+
+export interface ProjectionAxisConfig {
+  readonly eastSign?: AxisSign;
+  readonly northSign?: AxisSign;
+}
+
 export class Projection {
   private origin: GeoPoint;
   private cosineOfOriginLatitude: number;
+  private readonly eastSign: AxisSign;
+  private readonly northSign: AxisSign;
 
-  public constructor(origin: GeoPoint) {
+  public constructor(origin: GeoPoint, axisConfig: ProjectionAxisConfig = {}) {
     this.origin = { latitude: 0, longitude: 0 };
     this.cosineOfOriginLatitude = 1;
+    this.eastSign = this.normalizeAxisSign(axisConfig.eastSign);
+    this.northSign = this.normalizeAxisSign(axisConfig.northSign);
     this.setOrigin(origin);
   }
 
@@ -46,22 +57,27 @@ export class Projection {
     this.cosineOfOriginLatitude = cosine;
   }
 
+  public getAxisOrientationKey(): string {
+    return `axis-e${this.eastSign}-n${this.northSign}`;
+  }
+
   public latLonToLocalMeters(point: GeoPoint): LocalMeters {
     const deltaLatitude = (point.latitude - this.origin.latitude) * DEGREES_TO_RADIANS;
     const deltaLongitude = (point.longitude - this.origin.longitude) * DEGREES_TO_RADIANS;
 
     return {
-      east: deltaLongitude * EARTH_RADIUS_METERS * this.cosineOfOriginLatitude,
-      north: deltaLatitude * EARTH_RADIUS_METERS,
+      east: this.eastSign * deltaLongitude * EARTH_RADIUS_METERS * this.cosineOfOriginLatitude,
+      north: this.northSign * deltaLatitude * EARTH_RADIUS_METERS,
     };
   }
 
   public localMetersToLatLon(local: LocalMeters): GeoPoint {
     const latitude =
-      this.origin.latitude + (local.north / EARTH_RADIUS_METERS) * RADIANS_TO_DEGREES;
+      this.origin.latitude +
+      ((local.north * this.northSign) / EARTH_RADIUS_METERS) * RADIANS_TO_DEGREES;
     const longitude =
       this.origin.longitude +
-      (local.east / (EARTH_RADIUS_METERS * this.cosineOfOriginLatitude)) * RADIANS_TO_DEGREES;
+      ((local.east * this.eastSign) / (EARTH_RADIUS_METERS * this.cosineOfOriginLatitude)) * RADIANS_TO_DEGREES;
 
     return {
       latitude: this.clampLatitude(latitude),
@@ -82,5 +98,9 @@ export class Projection {
   private normalizeLongitude(longitude: number): number {
     const normalized = ((longitude + 180) % 360 + 360) % 360 - 180;
     return normalized === -180 ? 180 : normalized;
+  }
+
+  private normalizeAxisSign(sign: AxisSign | undefined): AxisSign {
+    return sign === -1 ? -1 : 1;
   }
 }

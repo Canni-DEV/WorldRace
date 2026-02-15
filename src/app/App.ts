@@ -111,15 +111,17 @@ export class App {
         this.sceneComposer.setDecorationDensityBudget(densityBudget);
       },
     });
-    this.projection = new Projection({
+    const projectionOrigin = {
       latitude: runtimeConfig.initialLatitude,
       longitude: runtimeConfig.initialLongitude,
-    });
+    };
+    const projectionAxes = {
+      eastSign: runtimeConfig.projectionEastSign,
+      northSign: runtimeConfig.projectionNorthSign,
+    };
+    this.projection = new Projection(projectionOrigin, projectionAxes);
     this.tileDataService = new TileDataService(
-      new Projection({
-        latitude: runtimeConfig.initialLatitude,
-        longitude: runtimeConfig.initialLongitude,
-      }),
+      new Projection(projectionOrigin, projectionAxes),
       {
         staleWhileRevalidate: runtimeConfig.cacheStaleWhileRevalidate,
         cacheTtlMs: runtimeConfig.cacheTtlMs,
