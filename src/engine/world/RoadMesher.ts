@@ -8,6 +8,9 @@ interface RoadMesherConfig {
   readonly maxRoadWidthMeters: number;
   readonly uvScale: number;
   readonly miterLimitMultiplier: number;
+  readonly minPointDistanceMeters: number;
+  readonly minMiterProjection: number;
+  readonly minTriangleSignedAreaY: number;
 }
 
 interface StripBuildResult {
@@ -23,6 +26,9 @@ const defaultConfig: RoadMesherConfig = {
   maxRoadWidthMeters: 30,
   uvScale: 0.1,
   miterLimitMultiplier: 4,
+  minPointDistanceMeters: 0.05,
+  minMiterProjection: 0.2,
+  minTriangleSignedAreaY: 1e-8,
 };
 
 export class RoadMesher {
@@ -36,6 +42,10 @@ export class RoadMesher {
       maxRoadWidthMeters: config.maxRoadWidthMeters ?? defaultConfig.maxRoadWidthMeters,
       uvScale: config.uvScale ?? defaultConfig.uvScale,
       miterLimitMultiplier: config.miterLimitMultiplier ?? defaultConfig.miterLimitMultiplier,
+      minPointDistanceMeters: config.minPointDistanceMeters ?? defaultConfig.minPointDistanceMeters,
+      minMiterProjection: config.minMiterProjection ?? defaultConfig.minMiterProjection,
+      minTriangleSignedAreaY:
+        config.minTriangleSignedAreaY ?? defaultConfig.minTriangleSignedAreaY,
     };
   }
 
@@ -149,7 +159,8 @@ export class RoadMesher {
     widthMeters: number,
     isCollisionMode: boolean,
   ): StripBuildResult | null {
-    if (centerline.length < 2) {
+    const sanitizedCenterline = this.sanitizeCenterline(centerline);
+    if (sanitizedCenterline.length < 2) {
       return null;
     }
 
@@ -158,14 +169,14 @@ export class RoadMesher {
     const rightPoints: TopologyPointMeters[] = [];
     const accumulatedLengths: number[] = [0];
 
-    for (let index = 0; index < centerline.length; index += 1) {
-      const point = centerline[index];
+    for (let index = 0; index < sanitizedCenterline.length; index += 1) {
+      const point = sanitizedCenterline[index];
       if (point === undefined) {
         return null;
       }
 
       if (index > 0) {
-        const previousPoint = centerline[index - 1];
+        const previousPoint = sanitizedCenterline[index - 1];
         if (previousPoint === undefined) {
           return null;
         }
@@ -173,8 +184,9 @@ export class RoadMesher {
         accumulatedLengths.push((accumulatedLengths[accumulatedLengths.length - 1] ?? 0) + distance);
       }
 
-      const previousPoint = index > 0 ? centerline[index - 1] : undefined;
-      const nextPoint = index < centerline.length - 1 ? centerline[index + 1] : undefined;
+      const previousPoint = index > 0 ? sanitizedCenterline[index - 1] : undefined;
+      const nextPoint =
+        index < sanitizedCenterline.length - 1 ? sanitizedCenterline[index + 1] : undefined;
       const offset = this.computeOffsetVector(point, previousPoint, nextPoint, halfWidth, isCollisionMode);
       if (offset === null) {
         return null;
@@ -209,20 +221,19 @@ export class RoadMesher {
       return null;
     }
 
+    const fallbackOffset = {
+      east: -forward.north * halfWidth,
+      north: forward.east * halfWidth,
+    };
+
     if (previous === undefined || next === undefined || isCollisionMode) {
-      return {
-        east: -forward.north * halfWidth,
-        north: forward.east * halfWidth,
-      };
+      return fallbackOffset;
     }
 
     const prevDirection = this.safeDirection(previous, current);
     const nextDirection = this.safeDirection(current, next);
     if (prevDirection === null || nextDirection === null) {
-      return {
-        east: -forward.north * halfWidth,
-        north: forward.east * halfWidth,
-      };
+      return fallbackOffset;
     }
 
     const normalPrev: TopologyPointMeters = { east: -prevDirection.north, north: prevDirection.east };
@@ -232,27 +243,18 @@ export class RoadMesher {
       north: normalPrev.north + normalNext.north,
     });
     if (miter === null) {
-      return {
-        east: normalNext.east * halfWidth,
-        north: normalNext.north * halfWidth,
-      };
+      return fallbackOffset;
     }
 
     const projection = this.dot(miter, normalNext);
-    if (Math.abs(projection) < 0.2) {
-      return {
-        east: normalNext.east * halfWidth,
-        north: normalNext.north * halfWidth,
-      };
+    if (projection <= this.config.minMiterProjection) {
+      return fallbackOffset;
     }
 
     const miterLength = halfWidth / projection;
     const maxMiterLength = halfWidth * this.config.miterLimitMultiplier;
-    if (Math.abs(miterLength) > maxMiterLength) {
-      return {
-        east: normalNext.east * halfWidth,
-        north: normalNext.north * halfWidth,
-      };
+    if (!Number.isFinite(miterLength) || Math.abs(miterLength) > maxMiterLength) {
+      return fallbackOffset;
     }
 
     return {
@@ -290,8 +292,8 @@ export class RoadMesher {
       const leftNext = baseVertex + (index + 1) * 2;
       const rightNext = leftNext + 1;
 
-      indices.push(leftCurrent, leftNext, rightCurrent);
-      indices.push(rightCurrent, leftNext, rightNext);
+      this.appendUpwardTriangle(positions, indices, leftCurrent, leftNext, rightCurrent);
+      this.appendUpwardTriangle(positions, indices, rightCurrent, leftNext, rightNext);
     }
   }
 
@@ -319,9 +321,82 @@ export class RoadMesher {
       const leftNext = baseVertex + (index + 1) * 2;
       const rightNext = leftNext + 1;
 
-      indices.push(leftCurrent, leftNext, rightCurrent);
-      indices.push(rightCurrent, leftNext, rightNext);
+      this.appendUpwardTriangle(positions, indices, leftCurrent, leftNext, rightCurrent);
+      this.appendUpwardTriangle(positions, indices, rightCurrent, leftNext, rightNext);
     }
+  }
+
+  private sanitizeCenterline(
+    centerline: readonly TopologyPointMeters[],
+  ): readonly TopologyPointMeters[] {
+    const sanitized: TopologyPointMeters[] = [];
+    for (const point of centerline) {
+      const previousPoint = sanitized[sanitized.length - 1];
+      if (previousPoint === undefined) {
+        sanitized.push(point);
+        continue;
+      }
+
+      if (this.distance(previousPoint, point) >= this.config.minPointDistanceMeters) {
+        sanitized.push(point);
+      }
+    }
+    return sanitized;
+  }
+
+  private appendUpwardTriangle(
+    positions: number[],
+    indices: number[],
+    indexA: number,
+    indexB: number,
+    indexC: number,
+  ): void {
+    const signedAreaY = this.computeTriangleSignedAreaY(positions, indexA, indexB, indexC);
+    if (!Number.isFinite(signedAreaY) || Math.abs(signedAreaY) <= this.config.minTriangleSignedAreaY) {
+      return;
+    }
+
+    if (signedAreaY < 0) {
+      indices.push(indexA, indexC, indexB);
+      return;
+    }
+
+    indices.push(indexA, indexB, indexC);
+  }
+
+  private computeTriangleSignedAreaY(
+    positions: readonly number[],
+    indexA: number,
+    indexB: number,
+    indexC: number,
+  ): number {
+    const aBase = indexA * 3;
+    const bBase = indexB * 3;
+    const cBase = indexC * 3;
+
+    const ax = positions[aBase];
+    const az = positions[aBase + 2];
+    const bx = positions[bBase];
+    const bz = positions[bBase + 2];
+    const cx = positions[cBase];
+    const cz = positions[cBase + 2];
+
+    if (
+      ax === undefined ||
+      az === undefined ||
+      bx === undefined ||
+      bz === undefined ||
+      cx === undefined ||
+      cz === undefined
+    ) {
+      return 0;
+    }
+
+    const abX = bx - ax;
+    const abZ = bz - az;
+    const acX = cx - ax;
+    const acZ = cz - az;
+    return abZ * acX - abX * acZ;
   }
 
   private appendRibbonDebugLines(
