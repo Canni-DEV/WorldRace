@@ -37,19 +37,20 @@
 
 ### PR-02: Geo core, anchor, and tile system
 **Goal:** deterministic world coordinates and tile addressing.
+**Status:** implemented locally.
 
 **Checklist**
-- [ ] Implement local projection (`lat/lon <-> local meters`) with explicit origin.
-- [ ] Implement `floating origin` recentering threshold and scene shift.
-- [ ] Implement tile keying by metric tile size (configurable 256m/512m).
-- [ ] Implement active/prefetch radius computation.
-- [ ] Implement camera anchor abstraction (`Anchor`), independent from controller.
-- [ ] Implement on-screen debug for current tile and desired tile set.
+- [x] Implement local projection (`lat/lon <-> local meters`) with explicit origin.
+- [x] Implement `floating origin` recentering threshold and scene shift.
+- [x] Implement tile keying by metric tile size (configurable 256m/512m).
+- [x] Implement active/prefetch radius computation.
+- [x] Implement camera anchor abstraction (`Anchor`), independent from controller.
+- [x] Implement on-screen debug for current tile and desired tile set.
 
 **Acceptance**
-- [ ] Moving camera updates tile key and desired ring correctly.
-- [ ] Recenter event keeps numerical stability after long displacement.
-- [ ] Tile grid debug aligns with projected coordinates.
+- [x] Moving camera updates tile key and desired ring correctly.
+- [x] Recenter event keeps numerical stability after long displacement.
+- [x] Tile grid debug aligns with projected coordinates.
 
 ---
 
