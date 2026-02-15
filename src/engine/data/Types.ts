@@ -22,6 +22,12 @@ export interface BuildingProperties {
   readonly kind: string;
   readonly levels: number | null;
   readonly heightMeters: number | null;
+  readonly roofShape: string | null;
+}
+
+export interface BuildingPolygon {
+  readonly outer: readonly PointMeters[];
+  readonly holes: readonly (readonly PointMeters[])[];
 }
 
 export interface RoadFeature {
@@ -32,7 +38,7 @@ export interface RoadFeature {
 
 export interface BuildingFeature {
   readonly id: string;
-  readonly footprint: readonly PointMeters[];
+  readonly polygons: readonly BuildingPolygon[];
   readonly properties: BuildingProperties;
 }
 
@@ -50,6 +56,7 @@ export interface TileOSMData {
   readonly fetchedAt: number;
   readonly bbox: GeoBoundsLatLon;
   readonly tileOriginGlobalMeters: PointMeters;
+  readonly tileSizeMeters: number;
   readonly roads: readonly RoadFeature[];
   readonly buildings: readonly BuildingFeature[];
   readonly emptyReason: TileEmptyReason;

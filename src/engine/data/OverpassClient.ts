@@ -26,6 +26,14 @@ interface OverpassRelation {
   readonly type: 'relation';
   readonly id: number;
   readonly tags?: Record<string, string>;
+  readonly members?: readonly OverpassRelationMember[];
+}
+
+interface OverpassRelationMember {
+  readonly type: 'node' | 'way' | 'relation';
+  readonly ref: number;
+  readonly role: string;
+  readonly geometry?: readonly OverpassGeometryPoint[];
 }
 
 type OverpassElement = OverpassNode | OverpassWay | OverpassRelation;

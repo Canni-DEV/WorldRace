@@ -2,6 +2,7 @@ import {
   AmbientLight,
   BufferGeometry,
   Color,
+  DoubleSide,
   DirectionalLight,
   Float32BufferAttribute,
   Group,
@@ -16,6 +17,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import type { GeoBoundsMeters } from '../geo/GeoBounds';
+import type { BuildingTileMeshPayload } from '../world/BuildingMeshTypes';
 import type { RoadTileMeshPayload } from '../world/RoadMeshTypes';
 
 interface RoadTileBundle {
@@ -24,6 +26,18 @@ interface RoadTileBundle {
   readonly surfaceGeometry: BufferGeometry;
   readonly collisionGeometry: BufferGeometry;
   readonly debugLineGeometry: BufferGeometry;
+}
+
+interface BuildingTileBundle {
+  readonly tileKey: string;
+  readonly group: Group;
+  readonly lod0Geometry: BufferGeometry;
+  readonly lod1Geometry: BufferGeometry;
+  readonly lod0Mesh: Mesh;
+  readonly lod1Mesh: Mesh;
+  readonly centerEast: number;
+  readonly centerNorth: number;
+  lodState: 'lod0' | 'lod1';
 }
 
 export interface RenderStats {
@@ -47,7 +61,9 @@ export class SceneComposer {
   private readonly renderer: WebGLRenderer;
   private readonly container: HTMLElement;
   private readonly roadRoot = new Group();
+  private readonly buildingRoot = new Group();
   private readonly roadTileBundles = new Map<string, RoadTileBundle>();
+  private readonly buildingTileBundles = new Map<string, BuildingTileBundle>();
   private readonly prefetchLines: DebugLineSegments;
   private readonly activeLines: DebugLineSegments;
   private readonly currentTileLines: DebugLineSegments;
@@ -72,7 +88,23 @@ export class SceneComposer {
     depthWrite: false,
   });
   private readonly roadDebugLineMaterial = new LineBasicMaterial({ color: 0xf59e0b });
+  private readonly buildingLod0Material = new MeshStandardMaterial({
+    color: 0x4b5563,
+    roughness: 0.92,
+    metalness: 0.04,
+    side: DoubleSide,
+  });
+  private readonly buildingLod1Material = new MeshStandardMaterial({
+    color: 0x334155,
+    roughness: 0.98,
+    metalness: 0.01,
+    side: DoubleSide,
+  });
   private roadDebugVisible = false;
+  private worldOffsetEast = 0;
+  private worldOffsetNorth = 0;
+  private readonly buildingLodNearDistanceMeters = 220;
+  private readonly buildingLodHysteresisMeters = 24;
 
   public constructor(container: HTMLElement) {
     this.container = container;
@@ -99,6 +131,7 @@ export class SceneComposer {
       ambientLight,
       directionalLight,
       this.roadRoot,
+      this.buildingRoot,
       this.prefetchLines,
       this.activeLines,
       this.currentTileLines,
@@ -112,6 +145,7 @@ export class SceneComposer {
   }
 
   public render(): void {
+    this.updateBuildingLodVisibility();
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -133,7 +167,10 @@ export class SceneComposer {
   }
 
   public setWorldOffset(offsetEast: number, offsetNorth: number): void {
+    this.worldOffsetEast = offsetEast;
+    this.worldOffsetNorth = offsetNorth;
     this.roadRoot.position.set(-offsetEast, 0, -offsetNorth);
+    this.buildingRoot.position.set(-offsetEast, 0, -offsetNorth);
   }
 
   public setRoadDebugOverlayEnabled(enabled: boolean): void {
@@ -199,6 +236,44 @@ export class SceneComposer {
     });
   }
 
+  public upsertBuildingTileMesh(tileMesh: BuildingTileMeshPayload): void {
+    this.removeBuildingTileMesh(tileMesh.tileKey);
+    if (tileMesh.lod0Positions.length === 0 || tileMesh.lod0Indices.length === 0) {
+      return;
+    }
+
+    const lod0Geometry = this.createIndexedGeometry(tileMesh.lod0Positions, tileMesh.lod0Indices);
+    const lod1Geometry = this.createIndexedGeometry(tileMesh.lod1Positions, tileMesh.lod1Indices);
+    const lod0Mesh = new Mesh(lod0Geometry, this.buildingLod0Material);
+    lod0Mesh.name = 'building-lod0';
+    lod0Mesh.castShadow = false;
+    lod0Mesh.receiveShadow = true;
+
+    const lod1Mesh = new Mesh(lod1Geometry, this.buildingLod1Material);
+    lod1Mesh.name = 'building-lod1';
+    lod1Mesh.castShadow = false;
+    lod1Mesh.receiveShadow = true;
+
+    const group = new Group();
+    group.name = `building-tile:${tileMesh.tileKey}`;
+    group.add(lod0Mesh, lod1Mesh);
+    this.buildingRoot.add(group);
+
+    const bundle: BuildingTileBundle = {
+      tileKey: tileMesh.tileKey,
+      group,
+      lod0Geometry,
+      lod1Geometry,
+      lod0Mesh,
+      lod1Mesh,
+      centerEast: tileMesh.tileCenter.east,
+      centerNorth: tileMesh.tileCenter.north,
+      lodState: 'lod0',
+    };
+    this.applyBuildingLod(bundle, 'lod0');
+    this.buildingTileBundles.set(tileMesh.tileKey, bundle);
+  }
+
   public updateTileDebugGrid(data: TileDebugGridData): void {
     this.updateLineGeometry(this.prefetchLines, data.prefetchTileBounds, 0.03);
     this.updateLineGeometry(this.activeLines, data.activeTileBounds, 0.06);
@@ -207,6 +282,7 @@ export class SceneComposer {
 
   public dispose(): void {
     this.clearRoadTiles();
+    this.clearBuildingTiles();
 
     this.prefetchLines.geometry.dispose();
     this.activeLines.geometry.dispose();
@@ -218,6 +294,8 @@ export class SceneComposer {
     this.roadWireframeMaterial.dispose();
     this.roadCollisionMaterial.dispose();
     this.roadDebugLineMaterial.dispose();
+    this.buildingLod0Material.dispose();
+    this.buildingLod1Material.dispose();
 
     this.renderer.dispose();
     this.renderer.domElement.remove();
@@ -226,6 +304,12 @@ export class SceneComposer {
   private clearRoadTiles(): void {
     for (const tileKey of this.roadTileBundles.keys()) {
       this.removeRoadTileMesh(tileKey);
+    }
+  }
+
+  private clearBuildingTiles(): void {
+    for (const tileKey of this.buildingTileBundles.keys()) {
+      this.removeBuildingTileMesh(tileKey);
     }
   }
 
@@ -242,8 +326,24 @@ export class SceneComposer {
     bundle.debugLineGeometry.dispose();
   }
 
+  public removeBuildingTileMesh(tileKey: string): void {
+    const bundle = this.buildingTileBundles.get(tileKey);
+    if (bundle === undefined) {
+      return;
+    }
+
+    this.buildingTileBundles.delete(tileKey);
+    this.buildingRoot.remove(bundle.group);
+    bundle.lod0Geometry.dispose();
+    bundle.lod1Geometry.dispose();
+  }
+
   public getRoadTileCount(): number {
     return this.roadTileBundles.size;
+  }
+
+  public getBuildingTileCount(): number {
+    return this.buildingTileBundles.size;
   }
 
   private createRoadSurfaceGeometry(
@@ -262,6 +362,10 @@ export class SceneComposer {
   }
 
   private createCollisionGeometry(positions: Float32Array, indices: Uint32Array): BufferGeometry {
+    return this.createIndexedGeometry(positions, indices);
+  }
+
+  private createIndexedGeometry(positions: Float32Array, indices: Uint32Array): BufferGeometry {
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
     geometry.setIndex(new Uint32BufferAttribute(indices, 1));
@@ -333,5 +437,43 @@ export class SceneComposer {
     }
 
     return vertices;
+  }
+
+  private updateBuildingLodVisibility(): void {
+    if (this.buildingTileBundles.size === 0) {
+      return;
+    }
+
+    const nearDistance = this.buildingLodNearDistanceMeters;
+    const hysteresis = this.buildingLodHysteresisMeters;
+    const nearDistanceSq = nearDistance * nearDistance;
+    const nearEnterSq = Math.max(0, nearDistance - hysteresis) ** 2;
+    const nearExitSq = (nearDistance + hysteresis) ** 2;
+    const cameraPosition = this.camera.position;
+
+    for (const bundle of this.buildingTileBundles.values()) {
+      const centerX = bundle.centerEast - this.worldOffsetEast;
+      const centerZ = bundle.centerNorth - this.worldOffsetNorth;
+      const deltaX = centerX - cameraPosition.x;
+      const deltaZ = centerZ - cameraPosition.z;
+      const distanceSq = deltaX * deltaX + deltaZ * deltaZ;
+
+      if (bundle.lodState === 'lod0') {
+        if (distanceSq > nearExitSq) {
+          this.applyBuildingLod(bundle, 'lod1');
+        }
+        continue;
+      }
+
+      if (distanceSq < nearEnterSq || distanceSq <= nearDistanceSq) {
+        this.applyBuildingLod(bundle, 'lod0');
+      }
+    }
+  }
+
+  private applyBuildingLod(bundle: BuildingTileBundle, targetLod: 'lod0' | 'lod1'): void {
+    bundle.lodState = targetLod;
+    bundle.lod0Mesh.visible = targetLod === 'lod0';
+    bundle.lod1Mesh.visible = targetLod === 'lod1';
   }
 }

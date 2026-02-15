@@ -161,24 +161,25 @@
 
 ### PR-08: Building pipeline (data + meshing + LOD)
 **Goal:** urban massing from OSM buildings.
+**Status:** implemented locally (instancing de LOD1 diferido; LOD funcional sin instancing).
 
 **Checklist**
-- [ ] Parse building polygons and multipolygons (with holes).
+- [x] Parse building polygons and multipolygons (with holes).
 - [ ] Resolve building height priority:
-- [ ] `height`
-- [ ] else `building:levels * 3m`
-- [ ] else class default
-- [ ] Triangulate footprint and extrude walls/roof (flat first).
-- [ ] Add optional simple roof variants from tags (gabled fallback).
+- [x] `height`
+- [x] else `building:levels * 3m`
+- [x] else class default
+- [x] Triangulate footprint and extrude walls/roof (flat first).
+- [x] Add optional simple roof variants from tags (gabled fallback).
 - [ ] Implement LOD:
-- [ ] LOD0 full extrusion near
-- [ ] LOD1 simplified box/hull far
+- [x] LOD0 full extrusion near
+- [x] LOD1 simplified box/hull far
 - [ ] Add instancing path for far simplified masses.
 
 **Acceptance**
-- [ ] Buildings appear aligned to map footprints.
-- [ ] Height estimates are deterministic and reproducible.
-- [ ] LOD swaps without visible popping artifacts above threshold.
+- [x] Buildings appear aligned to map footprints.
+- [x] Height estimates are deterministic and reproducible.
+- [x] LOD swaps without visible popping artifacts above threshold.
 
 ---
 

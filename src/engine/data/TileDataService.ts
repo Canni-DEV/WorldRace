@@ -8,6 +8,7 @@ import {
 import type { Projection } from '../geo/Projection';
 import type {
   BuildingFeature,
+  BuildingPolygon,
   CacheMetricsSnapshot,
   GeoBoundsLatLon,
   PointMeters,
@@ -18,12 +19,13 @@ import type {
   TileOSMData,
 } from './Types';
 
-const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v5';
-const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-meta-v2';
-const META_TILE_SCHEMA_VERSION = 'meta-tile-v2';
+const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v6';
+const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-meta-v3';
+const META_TILE_SCHEMA_VERSION = 'meta-tile-v3';
 const STATS_REFRESH_INTERVAL_MS = 2500;
 
 type OverpassWayElement = Extract<OverpassResponse['elements'][number], { type: 'way' }>;
+type OverpassRelationElement = Extract<OverpassResponse['elements'][number], { type: 'relation' }>;
 
 interface TileDataServiceConfig {
   readonly staleWhileRevalidate: boolean;
@@ -59,7 +61,7 @@ interface GlobalRoadFeature {
 
 interface GlobalBuildingFeature {
   readonly id: string;
-  readonly globalFootprint: readonly PointMeters[];
+  readonly polygons: readonly BuildingPolygon[];
   readonly properties: BuildingFeature['properties'];
 }
 
@@ -412,6 +414,12 @@ export class TileDataService {
   ): MetaTilePayload {
     const roads: GlobalRoadFeature[] = [];
     const buildings: GlobalBuildingFeature[] = [];
+    const waysById = new Map<number, OverpassWayElement>();
+    for (const element of payload.elements) {
+      if (element.type === 'way') {
+        waysById.set(element.id, element);
+      }
+    }
 
     for (const element of payload.elements) {
       if (element.type !== 'way') {
@@ -435,17 +443,42 @@ export class TileDataService {
         });
       }
 
-      if (this.isBuildingWay(way) && geometry.length >= 3) {
-        buildings.push({
-          id: `way/${way.id}`,
-          globalFootprint: this.ensureClosedPolygon(geometry),
-          properties: {
-            kind: way.tags?.building ?? 'yes',
-            levels: this.parsePositiveInteger(way.tags?.['building:levels'] ?? null),
-            heightMeters: this.parseHeightMeters(way.tags?.height ?? null),
-          },
-        });
+      if (!this.isBuildingWay(way)) {
+        continue;
       }
+
+      const outer = this.sanitizePolygonRing(geometry);
+      if (outer === null) {
+        continue;
+      }
+
+      buildings.push({
+        id: `way/${way.id}`,
+        polygons: [
+          {
+            outer,
+            holes: [],
+          },
+        ],
+        properties: this.parseBuildingProperties(way.tags),
+      });
+    }
+
+    for (const element of payload.elements) {
+      if (element.type !== 'relation' || !this.isBuildingRelation(element)) {
+        continue;
+      }
+
+      const relationPolygons = this.extractRelationPolygons(element, waysById);
+      if (relationPolygons.length === 0) {
+        continue;
+      }
+
+      buildings.push({
+        id: `relation/${element.id}`,
+        polygons: relationPolygons,
+        properties: this.parseBuildingProperties(element.tags),
+      });
     }
 
     return {
@@ -498,18 +531,38 @@ export class TileDataService {
 
     const buildings: BuildingFeature[] = [];
     for (const building of meta.buildings) {
-      if (!this.polygonBoundsIntersects(building.globalFootprint, expandedBounds)) {
+      const localPolygons: BuildingPolygon[] = [];
+      for (const polygon of building.polygons) {
+        if (!this.polygonBoundsIntersects(polygon.outer, expandedBounds)) {
+          continue;
+        }
+
+        const localOuter = polygon.outer.map((point) => ({
+          east: point.east - params.tileOriginGlobalMeters.east,
+          north: point.north - params.tileOriginGlobalMeters.north,
+        }));
+        const localHoles = polygon.holes
+          .map((hole) =>
+            hole.map((point) => ({
+              east: point.east - params.tileOriginGlobalMeters.east,
+              north: point.north - params.tileOriginGlobalMeters.north,
+            })),
+          )
+          .filter((hole) => hole.length >= 4);
+
+        localPolygons.push({
+          outer: this.ensureClosedPolygon(localOuter),
+          holes: localHoles.map((hole) => this.ensureClosedPolygon(hole)),
+        });
+      }
+
+      if (localPolygons.length === 0) {
         continue;
       }
 
-      const localFootprint = building.globalFootprint.map((point) => ({
-        east: point.east - params.tileOriginGlobalMeters.east,
-        north: point.north - params.tileOriginGlobalMeters.north,
-      }));
-
       buildings.push({
         id: building.id,
-        footprint: this.ensureClosedPolygon(localFootprint),
+        polygons: localPolygons,
         properties: building.properties,
       });
     }
@@ -525,6 +578,7 @@ export class TileDataService {
         east: params.tileOriginGlobalMeters.east,
         north: params.tileOriginGlobalMeters.north,
       },
+      tileSizeMeters: params.tileSizeMeters,
       roads,
       buildings,
       emptyReason: roads.length === 0 ? 'real-empty' : 'not-empty',
@@ -681,7 +735,183 @@ export class TileDataService {
   }
 
   private isBuildingWay(way: OverpassWayElement): boolean {
-    return typeof way.tags?.building === 'string';
+    const buildingTag = way.tags?.building;
+    return typeof buildingTag === 'string' && buildingTag !== 'no';
+  }
+
+  private isBuildingRelation(relation: OverpassRelationElement): boolean {
+    const buildingTag = relation.tags?.building;
+    return typeof buildingTag === 'string' && buildingTag !== 'no';
+  }
+
+  private parseBuildingProperties(tags: Record<string, string> | undefined): BuildingFeature['properties'] {
+    return {
+      kind: tags?.building ?? 'yes',
+      levels: this.parsePositiveInteger(tags?.['building:levels'] ?? null),
+      heightMeters: this.parseHeightMeters(tags?.height ?? null),
+      roofShape: this.parseRoofShape(tags?.['roof:shape'] ?? null),
+    };
+  }
+
+  private extractRelationPolygons(
+    relation: OverpassRelationElement,
+    waysById: Map<number, OverpassWayElement>,
+  ): BuildingPolygon[] {
+    const outerRings: PointMeters[][] = [];
+    const holeRings: PointMeters[][] = [];
+
+    for (const member of relation.members ?? []) {
+      if (member.type !== 'way') {
+        continue;
+      }
+
+      const role = member.role.trim().toLowerCase();
+      if (role !== 'outer' && role !== 'inner') {
+        continue;
+      }
+
+      const geometry = member.geometry ?? waysById.get(member.ref)?.geometry;
+      if (geometry === undefined) {
+        continue;
+      }
+
+      const ring = this.sanitizePolygonRing(this.normalizeGeometryToGlobal(geometry));
+      if (ring === null) {
+        continue;
+      }
+
+      if (role === 'outer') {
+        outerRings.push(ring);
+      } else {
+        holeRings.push(ring);
+      }
+    }
+
+    if (outerRings.length === 0) {
+      return [];
+    }
+
+    const polygons: { outer: PointMeters[]; holes: PointMeters[][] }[] = outerRings.map((outer) => ({
+      outer,
+      holes: [],
+    }));
+
+    for (const hole of holeRings) {
+      const holeAnchor = hole[0];
+      if (holeAnchor === undefined) {
+        continue;
+      }
+
+      let assigned = false;
+      for (const polygon of polygons) {
+        if (this.pointInPolygon(holeAnchor, polygon.outer)) {
+          polygon.holes.push(hole);
+          assigned = true;
+          break;
+        }
+      }
+
+      if (!assigned && polygons.length > 0) {
+        const fallbackPolygon = polygons[0];
+        if (fallbackPolygon !== undefined) {
+          fallbackPolygon.holes.push(hole);
+        }
+      }
+    }
+
+    return polygons.map((polygon) => ({
+      outer: polygon.outer,
+      holes: polygon.holes,
+    }));
+  }
+
+  private sanitizePolygonRing(points: readonly PointMeters[]): PointMeters[] | null {
+    if (points.length < 3) {
+      return null;
+    }
+
+    const compact: PointMeters[] = [];
+    for (const point of points) {
+      const previous = compact[compact.length - 1];
+      if (previous !== undefined && this.pointsNear(previous, point, 0.01)) {
+        continue;
+      }
+      compact.push(point);
+    }
+
+    if (compact.length < 3) {
+      return null;
+    }
+
+    const first = compact[0];
+    const last = compact[compact.length - 1];
+    if (first !== undefined && last !== undefined && this.pointsNear(first, last, 0.01)) {
+      compact.pop();
+    }
+
+    if (compact.length < 3) {
+      return null;
+    }
+
+    const closed = this.ensureClosedPolygon(compact);
+    const area = Math.abs(this.computeSignedArea(closed));
+    if (!Number.isFinite(area) || area < 0.25) {
+      return null;
+    }
+    return closed;
+  }
+
+  private pointsNear(pointA: PointMeters, pointB: PointMeters, epsilonMeters: number): boolean {
+    const deltaEast = pointA.east - pointB.east;
+    const deltaNorth = pointA.north - pointB.north;
+    return deltaEast * deltaEast + deltaNorth * deltaNorth <= epsilonMeters * epsilonMeters;
+  }
+
+  private computeSignedArea(ring: readonly PointMeters[]): number {
+    if (ring.length < 4) {
+      return 0;
+    }
+
+    let signedArea = 0;
+    for (let index = 0; index < ring.length - 1; index += 1) {
+      const current = ring[index];
+      const next = ring[index + 1];
+      if (current === undefined || next === undefined) {
+        continue;
+      }
+      signedArea += current.east * next.north - next.east * current.north;
+    }
+
+    return signedArea * 0.5;
+  }
+
+  private pointInPolygon(point: PointMeters, polygonRing: readonly PointMeters[]): boolean {
+    if (polygonRing.length < 4) {
+      return false;
+    }
+
+    let inside = false;
+    const lastIndex = polygonRing.length - 1;
+    for (let index = 0; index < lastIndex; index += 1) {
+      const current = polygonRing[index];
+      const next = polygonRing[index + 1];
+      if (current === undefined || next === undefined) {
+        continue;
+      }
+
+      const intersects =
+        (current.north > point.north) !== (next.north > point.north) &&
+        point.east <
+          ((next.east - current.east) * (point.north - current.north)) /
+            (next.north - current.north + Number.EPSILON) +
+            current.east;
+
+      if (intersects) {
+        inside = !inside;
+      }
+    }
+
+    return inside;
   }
 
   private parsePositiveInteger(value: string | null): number | null {
@@ -727,6 +957,14 @@ export class TileDataService {
       return null;
     }
     return parsed;
+  }
+
+  private parseRoofShape(value: string | null): string | null {
+    if (value === null) {
+      return null;
+    }
+    const normalized = value.trim().toLowerCase();
+    return normalized.length === 0 ? null : normalized;
   }
 
   private parseWidthMeters(value: string | null): number | null {
