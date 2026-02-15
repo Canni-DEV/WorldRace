@@ -3,6 +3,7 @@ dist
 .DS_Store
 *.log
 .idea
+.vite
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
