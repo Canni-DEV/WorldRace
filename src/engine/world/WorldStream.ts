@@ -1,11 +1,12 @@
 import type { TileDataService } from '../data/TileDataService';
-import type { TileFetchParams, TileFetchResult } from '../data/Types';
+import type { TerrainKind, TileFetchParams, TileFetchResult } from '../data/Types';
 import type { SceneComposer } from '../render/SceneComposer';
 import type { TileCoordinate, TileRings, TileSystem } from '../geo/TileSystem';
 import { BuildingMesher } from './BuildingMesher';
 import { DecorationMesher } from './DecorationMesher';
 import { RoadMeshBuildService } from './RoadMeshBuildService';
 import type { RoadMeshStats } from './RoadMeshTypes';
+import { TerrainMesher } from './TerrainMesher';
 import type { TopologyRegistry } from './TopologyRegistry';
 
 type TileRingKind = 'active' | 'prefetch';
@@ -42,6 +43,7 @@ interface LoadedTileEntry {
   readonly source: TileFetchResult['source'];
   readonly roadsCount: number;
   readonly buildingsCount: number;
+  readonly terrainDominantKind: TerrainKind;
   readonly decorationPointsCount: number;
   readonly decorationAreasCount: number;
   readonly decorationInstanceCount: number;
@@ -69,6 +71,7 @@ export interface WorldStreamCurrentTileSnapshot {
   readonly source: TileFetchResult['source'];
   readonly roadsCount: number;
   readonly buildingsCount: number;
+  readonly terrainDominantKind: TerrainKind;
   readonly decorationPointsCount: number;
   readonly decorationAreasCount: number;
   readonly decorationInstanceCount: number;
@@ -124,6 +127,7 @@ export class WorldStream {
   private readonly createTileFetchParams: (tile: TileCoordinate, tileKey: string) => TileFetchParams;
   private readonly buildingMesher = new BuildingMesher();
   private readonly decorationMesher = new DecorationMesher();
+  private readonly terrainMesher = new TerrainMesher();
   private readonly buildService: RoadMeshBuildService;
   private readonly maxConcurrentLoads: number;
   private readonly maxConcurrentFetches: number;
@@ -226,6 +230,7 @@ export class WorldStream {
               source: currentTile.source,
               roadsCount: currentTile.roadsCount,
               buildingsCount: currentTile.buildingsCount,
+              terrainDominantKind: currentTile.terrainDominantKind,
               decorationPointsCount: currentTile.decorationPointsCount,
               decorationAreasCount: currentTile.decorationAreasCount,
               decorationInstanceCount: currentTile.decorationInstanceCount,
@@ -359,6 +364,7 @@ export class WorldStream {
     this.sceneComposer.removeRoadTileMesh(tileKey);
     this.sceneComposer.removeBuildingTileMesh(tileKey);
     this.sceneComposer.removeDecorationTileMesh(tileKey);
+    this.sceneComposer.removeTerrainTileMesh(tileKey);
     this.topologyRegistry.removeTile(tileKey);
     this.loadedByKey.delete(tileKey);
     this.approxMeshBytes = Math.max(0, this.approxMeshBytes - loaded.approxMeshBytes);
@@ -498,6 +504,7 @@ export class WorldStream {
       const buildingBuildStartedAt = performance.now();
       const buildingMesh = this.buildingMesher.buildTileBuildingMesh(fetched.data);
       const decorationMesh = this.decorationMesher.buildTileDecorationMesh(fetched.data);
+      const terrainMesh = this.terrainMesher.buildTileTerrainMesh(fetched.data);
       const buildPostRoadMs = performance.now() - buildingBuildStartedAt;
       this.lastBuildMs = roadBuildResult.buildTimeMs + buildPostRoadMs;
 
@@ -510,6 +517,7 @@ export class WorldStream {
       this.sceneComposer.upsertRoadTileMesh(roadBuildResult.payload);
       this.sceneComposer.upsertBuildingTileMesh(buildingMesh);
       this.sceneComposer.upsertDecorationTileMesh(decorationMesh);
+      this.sceneComposer.upsertTerrainTileMesh(terrainMesh);
       const previous = this.loadedByKey.get(tileKey);
       if (previous !== undefined) {
         this.approxMeshBytes = Math.max(0, this.approxMeshBytes - previous.approxMeshBytes);
@@ -531,6 +539,8 @@ export class WorldStream {
         buildingMesh.lod0Indices.byteLength +
         buildingMesh.lod1Positions.byteLength +
         buildingMesh.lod1Indices.byteLength +
+        terrainMesh.positions.byteLength +
+        terrainMesh.indices.byteLength +
         decorationBytes;
 
       this.approxMeshBytes += approxMeshBytes;
@@ -540,6 +550,7 @@ export class WorldStream {
         source: fetched.source,
         roadsCount: fetched.data.roads.length,
         buildingsCount: fetched.data.buildings.length,
+        terrainDominantKind: fetched.data.terrainSummary.dominantKind,
         decorationPointsCount: fetched.data.decorationPoints.length,
         decorationAreasCount: fetched.data.decorationAreas.length,
         decorationInstanceCount,

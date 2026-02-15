@@ -226,9 +226,19 @@ export class OverpassClient {
   way["landuse"="forest"](${bbox});
   way["natural"~"^(wood|scrub)$"](${bbox});
   way["leisure"="park"](${bbox});
+  way["natural"~"^(water|wetland)$"](${bbox});
+  way["waterway"="riverbank"](${bbox});
+  way["landuse"~"^(reservoir|residential|commercial|industrial|retail|forest|farmland|meadow|grass)$"](${bbox});
+  way["natural"~"^(wood|scrub|grassland)$"](${bbox});
+  way["leisure"~"^(park|garden|golf_course)$"](${bbox});
   relation["landuse"="forest"](${bbox});
   relation["natural"~"^(wood|scrub)$"](${bbox});
   relation["leisure"="park"](${bbox});
+  relation["natural"~"^(water|wetland)$"](${bbox});
+  relation["waterway"="riverbank"](${bbox});
+  relation["landuse"~"^(reservoir|residential|commercial|industrial|retail|forest|farmland|meadow|grass)$"](${bbox});
+  relation["natural"~"^(wood|scrub|grassland)$"](${bbox});
+  relation["leisure"~"^(park|garden|golf_course)$"](${bbox});
 );
 out geom tags;`;
   }

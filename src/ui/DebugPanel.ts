@@ -10,6 +10,7 @@ export interface DebugPanelMetrics {
   tileDataStatus: string;
   tileRoadsCount: number;
   tileBuildingsCount: number;
+  tileTerrainKind: string;
   tileDecorationPointsCount: number;
   tileDecorationAreasCount: number;
   tileDecorationInstancesCount: number;
@@ -24,6 +25,7 @@ export interface DebugPanelMetrics {
   roadMeshWidthRange: string;
   roadJunctionSummary: string;
   roadDebugOverlayEnabled: boolean;
+  renderedTerrainTiles: number;
   renderedRoadTiles: number;
   renderedDecorationTiles: number;
   renderedDecorationInstances: number;
@@ -244,6 +246,7 @@ export class DebugPanel {
       tileDataStatus: 'idle',
       tileRoadsCount: 0,
       tileBuildingsCount: 0,
+      tileTerrainKind: 'green',
       tileDecorationPointsCount: 0,
       tileDecorationAreasCount: 0,
       tileDecorationInstancesCount: 0,
@@ -258,6 +261,7 @@ export class DebugPanel {
       roadMeshWidthRange: '0-0',
       roadJunctionSummary: '-',
       roadDebugOverlayEnabled: false,
+      renderedTerrainTiles: 0,
       renderedRoadTiles: 0,
       renderedDecorationTiles: 0,
       renderedDecorationInstances: 0,
@@ -291,7 +295,7 @@ export class DebugPanel {
     this.prefetchSampleElement.textContent = `Prefetch sample: ${metrics.prefetchTileSample}`;
     this.recenterElement.textContent = `Floating recenter: ${metrics.floatingOriginRecenters}`;
     this.tileDataStatusElement.textContent = `Tile data: ${metrics.tileDataStatus}`;
-    this.tileDataCountsElement.textContent = `Current payload: ${metrics.tileRoadsCount} roads | ${metrics.tileBuildingsCount} buildings`;
+    this.tileDataCountsElement.textContent = `Current payload: ${metrics.tileRoadsCount} roads | ${metrics.tileBuildingsCount} buildings | terrain ${metrics.tileTerrainKind}`;
     this.decorationDataElement.textContent = `Decoration payload: ${metrics.tileDecorationPointsCount} points | ${metrics.tileDecorationAreasCount} areas | ${metrics.tileDecorationInstancesCount} instances`;
     this.decorationRenderElement.textContent = `Decoration render: ${metrics.renderedDecorationTiles} tiles | ${metrics.renderedDecorationInstances} visible instances`;
     this.decorationToggleInput.checked = metrics.decorationEnabled;
@@ -303,7 +307,7 @@ export class DebugPanel {
     this.roadMeshCountsElement.textContent = `Road mesh: ${metrics.roadMeshEdgeCount} edges | ${metrics.roadMeshTriangleCount} tris | collision ${metrics.roadCollisionTriangleCount} tris`;
     this.roadMeshStatsElement.textContent = `Width range: ${metrics.roadMeshWidthRange} m`;
     this.roadJunctionElement.textContent = `Junctions: ${metrics.roadJunctionSummary}`;
-    this.roadDebugElement.textContent = `Road debug: ${metrics.roadDebugOverlayEnabled ? 'on' : 'off'} | rendered road tiles ${metrics.renderedRoadTiles}`;
+    this.roadDebugElement.textContent = `Road debug: ${metrics.roadDebugOverlayEnabled ? 'on' : 'off'} | rendered terrain/road tiles ${metrics.renderedTerrainTiles}/${metrics.renderedRoadTiles}`;
     this.streamQueueElement.textContent = `Stream queue: desired ${metrics.streamDesiredTiles} | loaded ${metrics.streamLoadedTiles} | pending ${metrics.streamPendingTiles} | fetch ${metrics.streamInflightFetches} | build ${metrics.streamInflightBuilds}`;
     this.streamTimingElement.textContent = `Stream timings: fetch ${metrics.streamLastFetchMs.toFixed(1)} ms | build ${metrics.streamLastBuildMs.toFixed(1)} ms | mode ${metrics.streamBuildMode}`;
     this.streamReliabilityElement.textContent = `Stream reliability: canceled_obsolete ${metrics.streamCanceledObsoleteLoads} | deferred_prefetch ${metrics.streamDeferredPrefetchLoads} | skipped_focus ${metrics.streamSkippedPrefetchBecauseForeground} | disposed ${metrics.streamDisposedTiles} | errors f/b ${metrics.streamFetchErrors}/${metrics.streamBuildErrors}`;

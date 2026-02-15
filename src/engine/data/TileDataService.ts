@@ -17,19 +17,27 @@ import type {
   GeoBoundsLatLon,
   PointMeters,
   RoadFeature,
+  TerrainAreaFeature,
+  TerrainKind,
+  TileTerrainCoverage,
+  TileTerrainSummary,
   TileFetchOptions,
   TileFetchParams,
   TileFetchResult,
   TileOSMData,
 } from './Types';
 
-const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v9';
-const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-decoration-meta-v4';
-const META_TILE_SCHEMA_VERSION = 'meta-tile-v6';
+const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v10';
+const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-decoration-terrain-meta-v5';
+const META_TILE_SCHEMA_VERSION = 'meta-tile-v7';
 const STATS_REFRESH_INTERVAL_MS = 2500;
 const POLYGON_POINT_EPSILON_METERS = 0.01;
 const RELATION_RING_SNAP_TOLERANCE_METERS = 0.35;
 const WAY_RING_CLOSING_TOLERANCE_METERS = 0.35;
+const TERRAIN_WATER_DOMINANT_COVERAGE = 0.35;
+const TERRAIN_URBAN_DOMINANT_COVERAGE = 0.3;
+const TERRAIN_URBAN_BUILDING_COUNT_THRESHOLD = 4;
+const TERRAIN_URBAN_ROAD_COUNT_THRESHOLD = 6;
 
 type OverpassWayElement = Extract<OverpassResponse['elements'][number], { type: 'way' }>;
 type OverpassRelationElement = Extract<OverpassResponse['elements'][number], { type: 'relation' }>;
@@ -84,6 +92,12 @@ interface GlobalDecorationAreaFeature {
   readonly polygons: readonly BuildingPolygon[];
 }
 
+interface GlobalTerrainAreaFeature {
+  readonly id: string;
+  readonly kind: TerrainKind;
+  readonly polygons: readonly BuildingPolygon[];
+}
+
 interface MetaTilePayload {
   readonly metaTileKey: string;
   readonly schemaVersion: string;
@@ -104,6 +118,7 @@ interface MetaTilePayload {
   readonly buildings: readonly GlobalBuildingFeature[];
   readonly decorationPoints: readonly GlobalDecorationPointFeature[];
   readonly decorationAreas: readonly GlobalDecorationAreaFeature[];
+  readonly terrainAreas: readonly GlobalTerrainAreaFeature[];
 }
 
 interface MetaTileFetchResult {
@@ -439,6 +454,7 @@ export class TileDataService {
     const buildings: GlobalBuildingFeature[] = [];
     const decorationPoints: GlobalDecorationPointFeature[] = [];
     const decorationAreas: GlobalDecorationAreaFeature[] = [];
+    const terrainAreas: GlobalTerrainAreaFeature[] = [];
     const waysById = new Map<number, OverpassWayElement>();
     for (const element of payload.elements) {
       if (element.type === 'way') {
@@ -448,6 +464,7 @@ export class TileDataService {
 
     const buildingRelationMemberWayIds = new Set<number>();
     const decorationRelationMemberWayIds = new Set<number>();
+    const terrainRelationMemberWayIds = new Set<number>();
     for (const element of payload.elements) {
       if (element.type !== 'relation') {
         continue;
@@ -456,7 +473,7 @@ export class TileDataService {
       if (this.isBuildingRelation(element)) {
         const relationPolygons = this.extractRelationPolygons(element, waysById);
         if (relationPolygons.length > 0) {
-          for (const wayId of this.collectBuildingRelationWayIds(element)) {
+          for (const wayId of this.collectRelationAreaWayIds(element)) {
             buildingRelationMemberWayIds.add(wayId);
           }
 
@@ -469,7 +486,8 @@ export class TileDataService {
       }
 
       const decorationAreaKind = this.parseDecorationAreaKind(element.tags);
-      if (decorationAreaKind === null) {
+      const terrainAreaKind = this.parseTerrainAreaKind(element.tags);
+      if (decorationAreaKind === null && terrainAreaKind === null) {
         continue;
       }
 
@@ -477,14 +495,29 @@ export class TileDataService {
       if (relationPolygons.length === 0) {
         continue;
       }
-      for (const wayId of this.collectBuildingRelationWayIds(element)) {
-        decorationRelationMemberWayIds.add(wayId);
+
+      const relationWayIds = this.collectRelationAreaWayIds(element);
+      if (decorationAreaKind !== null) {
+        for (const wayId of relationWayIds) {
+          decorationRelationMemberWayIds.add(wayId);
+        }
+        decorationAreas.push({
+          id: `relation/${element.id}`,
+          kind: decorationAreaKind,
+          polygons: relationPolygons,
+        });
       }
-      decorationAreas.push({
-        id: `relation/${element.id}`,
-        kind: decorationAreaKind,
-        polygons: relationPolygons,
-      });
+
+      if (terrainAreaKind !== null) {
+        for (const wayId of relationWayIds) {
+          terrainRelationMemberWayIds.add(wayId);
+        }
+        terrainAreas.push({
+          id: `relation/${element.id}`,
+          kind: terrainAreaKind,
+          polygons: relationPolygons,
+        });
+      }
     }
 
     for (const element of payload.elements) {
@@ -547,6 +580,23 @@ export class TileDataService {
         }
       }
 
+      const terrainAreaKind = this.parseTerrainAreaKind(way.tags);
+      if (terrainAreaKind !== null && !terrainRelationMemberWayIds.has(way.id)) {
+        const terrainOuter = this.sanitizePolygonRing(geometry, WAY_RING_CLOSING_TOLERANCE_METERS);
+        if (terrainOuter !== null) {
+          terrainAreas.push({
+            id: `way/${way.id}`,
+            kind: terrainAreaKind,
+            polygons: [
+              {
+                outer: terrainOuter,
+                holes: [],
+              },
+            ],
+          });
+        }
+      }
+
       if (!this.isBuildingWay(way)) {
         continue;
       }
@@ -587,6 +637,7 @@ export class TileDataService {
       buildings,
       decorationPoints,
       decorationAreas,
+      terrainAreas,
     };
   }
 
@@ -741,6 +792,60 @@ export class TileDataService {
       });
     }
 
+    const terrainAreas: TerrainAreaFeature[] = [];
+    for (const area of meta.terrainAreas) {
+      const localPolygons: BuildingPolygon[] = [];
+      for (const polygon of area.polygons) {
+        if (!this.polygonBoundsIntersects(polygon.outer, expandedBounds)) {
+          continue;
+        }
+        if (
+          !this.isPolygonOwnedByTile(
+            polygon.outer,
+            params.tileCoordinate,
+            params.tileSizeMeters,
+          )
+        ) {
+          continue;
+        }
+
+        const localOuter = polygon.outer.map((point) => ({
+          east: point.east - params.tileOriginGlobalMeters.east,
+          north: point.north - params.tileOriginGlobalMeters.north,
+        }));
+        const localHoles = polygon.holes
+          .map((hole) =>
+            hole.map((point) => ({
+              east: point.east - params.tileOriginGlobalMeters.east,
+              north: point.north - params.tileOriginGlobalMeters.north,
+            })),
+          )
+          .filter((hole) => hole.length >= 4);
+
+        localPolygons.push({
+          outer: this.ensureClosedPolygon(localOuter),
+          holes: localHoles.map((hole) => this.ensureClosedPolygon(hole)),
+        });
+      }
+
+      if (localPolygons.length === 0) {
+        continue;
+      }
+
+      terrainAreas.push({
+        id: area.id,
+        kind: area.kind,
+        polygons: localPolygons,
+      });
+    }
+
+    const terrainSummary = this.buildTileTerrainSummary(
+      terrainAreas,
+      roads.length,
+      buildings.length,
+      params.tileSizeMeters,
+    );
+
     return {
       tileKey: params.tileKey,
       schemaVersion: NORMALIZED_SCHEMA_VERSION,
@@ -757,7 +862,49 @@ export class TileDataService {
       buildings,
       decorationPoints,
       decorationAreas,
+      terrainAreas,
+      terrainSummary,
       emptyReason: roads.length === 0 ? 'real-empty' : 'not-empty',
+    };
+  }
+
+  private buildTileTerrainSummary(
+    terrainAreas: readonly TerrainAreaFeature[],
+    roadCount: number,
+    buildingCount: number,
+    tileSizeMeters: number,
+  ): TileTerrainSummary {
+    const tileAreaSquareMeters = Math.max(1, tileSizeMeters * tileSizeMeters);
+    const rawCoverage = {
+      urban: 0,
+      green: 0,
+      water: 0,
+    };
+
+    for (const area of terrainAreas) {
+      let accumulatedArea = 0;
+      for (const polygon of area.polygons) {
+        accumulatedArea += this.computePolygonAreaMeters(polygon);
+      }
+      rawCoverage[area.kind] += accumulatedArea / tileAreaSquareMeters;
+    }
+
+    const coverage: TileTerrainCoverage = {
+      urban: this.clamp01(rawCoverage.urban),
+      green: this.clamp01(rawCoverage.green),
+      water: this.clamp01(rawCoverage.water),
+    };
+
+    const hasUrbanDensitySignal =
+      buildingCount >= TERRAIN_URBAN_BUILDING_COUNT_THRESHOLD ||
+      roadCount >= TERRAIN_URBAN_ROAD_COUNT_THRESHOLD;
+    const dominantKind = this.resolveDominantTerrainKind(coverage, hasUrbanDensitySignal);
+    const confidence = this.resolveTerrainConfidence(coverage, dominantKind, hasUrbanDensitySignal);
+
+    return {
+      dominantKind,
+      coverage,
+      confidence,
     };
   }
 
@@ -807,6 +954,57 @@ export class TileDataService {
     }
 
     return denseNeighborDetected;
+  }
+
+  private resolveDominantTerrainKind(
+    coverage: TileTerrainCoverage,
+    hasUrbanDensitySignal: boolean,
+  ): TerrainKind {
+    if (coverage.water >= TERRAIN_WATER_DOMINANT_COVERAGE) {
+      return 'water';
+    }
+
+    if (coverage.urban >= TERRAIN_URBAN_DOMINANT_COVERAGE || hasUrbanDensitySignal) {
+      return 'urban';
+    }
+
+    if (coverage.green >= coverage.urban && coverage.green >= coverage.water) {
+      return 'green';
+    }
+    if (coverage.water >= coverage.urban) {
+      return 'water';
+    }
+    if (coverage.urban > 0) {
+      return 'urban';
+    }
+
+    return 'green';
+  }
+
+  private resolveTerrainConfidence(
+    coverage: TileTerrainCoverage,
+    dominantKind: TerrainKind,
+    hasUrbanDensitySignal: boolean,
+  ): number {
+    const values = [coverage.urban, coverage.green, coverage.water].sort((left, right) => right - left);
+    const strongest = values[0] ?? 0;
+    const secondStrongest = values[1] ?? 0;
+    let confidence = this.clamp01(0.25 + strongest * 0.5 + (strongest - secondStrongest) * 0.5);
+
+    if (dominantKind === 'urban' && hasUrbanDensitySignal && coverage.urban < TERRAIN_URBAN_DOMINANT_COVERAGE) {
+      confidence = Math.max(confidence, 0.45);
+    }
+
+    return confidence;
+  }
+
+  private computePolygonAreaMeters(polygon: BuildingPolygon): number {
+    const outerArea = Math.abs(this.computeSignedArea(this.ensureClosedPolygon(polygon.outer)));
+    const holeArea = polygon.holes.reduce(
+      (accumulator, hole) => accumulator + Math.abs(this.computeSignedArea(this.ensureClosedPolygon(hole))),
+      0,
+    );
+    return Math.max(0, outerArea - holeArea);
   }
 
   private buildMetaTileContext(params: TileFetchParams, paddingMeters: number): MetaTileContext {
@@ -982,6 +1180,52 @@ export class TileDataService {
     return null;
   }
 
+  private parseTerrainAreaKind(tags: Record<string, string> | undefined): TerrainKind | null {
+    if (tags === undefined) {
+      return null;
+    }
+
+    const landuse = tags.landuse?.trim().toLowerCase();
+    const natural = tags.natural?.trim().toLowerCase();
+    const leisure = tags.leisure?.trim().toLowerCase();
+    const waterway = tags.waterway?.trim().toLowerCase();
+
+    if (
+      natural === 'water' ||
+      natural === 'wetland' ||
+      waterway === 'riverbank' ||
+      landuse === 'reservoir'
+    ) {
+      return 'water';
+    }
+
+    if (
+      landuse === 'residential' ||
+      landuse === 'commercial' ||
+      landuse === 'industrial' ||
+      landuse === 'retail'
+    ) {
+      return 'urban';
+    }
+
+    if (
+      landuse === 'forest' ||
+      landuse === 'farmland' ||
+      landuse === 'meadow' ||
+      landuse === 'grass' ||
+      natural === 'wood' ||
+      natural === 'scrub' ||
+      natural === 'grassland' ||
+      leisure === 'park' ||
+      leisure === 'garden' ||
+      leisure === 'golf_course'
+    ) {
+      return 'green';
+    }
+
+    return null;
+  }
+
   private extractRelationPolygons(
     relation: OverpassRelationElement,
     waysById: Map<number, OverpassWayElement>,
@@ -1056,7 +1300,7 @@ export class TileDataService {
     }));
   }
 
-  private collectBuildingRelationWayIds(relation: OverpassRelationElement): number[] {
+  private collectRelationAreaWayIds(relation: OverpassRelationElement): number[] {
     const wayIds: number[] = [];
     for (const member of relation.members ?? []) {
       if (member.type !== 'way') {
@@ -1442,6 +1686,13 @@ export class TileDataService {
     }
 
     return parsed;
+  }
+
+  private clamp01(value: number): number {
+    if (!Number.isFinite(value)) {
+      return 0;
+    }
+    return Math.max(0, Math.min(1, value));
   }
 
   private expandBounds(
