@@ -290,8 +290,8 @@ export class RoadMesher {
       const leftNext = baseVertex + (index + 1) * 2;
       const rightNext = leftNext + 1;
 
-      indices.push(leftCurrent, rightCurrent, leftNext);
-      indices.push(rightCurrent, rightNext, leftNext);
+      indices.push(leftCurrent, leftNext, rightCurrent);
+      indices.push(rightCurrent, leftNext, rightNext);
     }
   }
 
@@ -319,8 +319,8 @@ export class RoadMesher {
       const leftNext = baseVertex + (index + 1) * 2;
       const rightNext = leftNext + 1;
 
-      indices.push(leftCurrent, rightCurrent, leftNext);
-      indices.push(rightCurrent, rightNext, leftNext);
+      indices.push(leftCurrent, leftNext, rightCurrent);
+      indices.push(rightCurrent, leftNext, rightNext);
     }
   }
 
