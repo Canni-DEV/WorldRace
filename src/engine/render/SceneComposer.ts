@@ -1,16 +1,22 @@
 import {
   AmbientLight,
+  BoxGeometry,
   BufferGeometry,
   Color,
+  ConeGeometry,
+  CylinderGeometry,
   DoubleSide,
   DirectionalLight,
   Float32BufferAttribute,
   Group,
+  InstancedMesh,
   LineBasicMaterial,
   LineSegments,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  Object3D,
   PerspectiveCamera,
   Scene,
   Uint32BufferAttribute,
@@ -19,6 +25,10 @@ import {
 import type { GeoBoundsMeters } from '../geo/GeoBounds';
 import type { TileCoordinate } from '../geo/TileSystem';
 import type { BuildingTileMeshPayload } from '../world/BuildingMeshTypes';
+import type {
+  DecorationPropKind,
+  DecorationTileMeshPayload,
+} from '../world/DecorationMeshTypes';
 import type { RoadTileMeshPayload } from '../world/RoadMeshTypes';
 
 interface RoadTileBundle {
@@ -40,6 +50,21 @@ interface BuildingTileBundle {
   readonly centerEast: number;
   readonly centerNorth: number;
   lodState: 'lod0' | 'lod1';
+}
+
+interface DecorationKindBundle {
+  readonly kind: DecorationPropKind;
+  readonly mesh: InstancedMesh;
+  readonly totalInstances: number;
+}
+
+interface DecorationTileBundle {
+  readonly tileKey: string;
+  readonly group: Group;
+  readonly kindBundles: readonly DecorationKindBundle[];
+  readonly tileCoordinate: TileCoordinate | null;
+  readonly centerEast: number;
+  readonly centerNorth: number;
 }
 
 export interface RenderStats {
@@ -64,8 +89,10 @@ export class SceneComposer {
   private readonly container: HTMLElement;
   private readonly roadRoot = new Group();
   private readonly buildingRoot = new Group();
+  private readonly decorationRoot = new Group();
   private readonly roadTileBundles = new Map<string, RoadTileBundle>();
   private readonly buildingTileBundles = new Map<string, BuildingTileBundle>();
+  private readonly decorationTileBundles = new Map<string, DecorationTileBundle>();
   private readonly prefetchLines: DebugLineSegments;
   private readonly activeLines: DebugLineSegments;
   private readonly currentTileLines: DebugLineSegments;
@@ -96,12 +123,18 @@ export class SceneComposer {
     metalness: 0.04,
     side: DoubleSide,
   });
+  private readonly decorationGeometryByKind: Readonly<Record<DecorationPropKind, BufferGeometry>>;
+  private readonly decorationMaterialByKind: Readonly<Record<DecorationPropKind, MeshStandardMaterial>>;
+  private readonly instanceTransformHelper = new Object3D();
+  private readonly instanceMatrix = new Matrix4();
   private roadDebugVisible = false;
   private worldOffsetEast = 0;
   private worldOffsetNorth = 0;
   private currentTileCoordinate: TileCoordinate | null = null;
   private readonly buildingLodNearDistanceMeters = 220;
   private readonly buildingLodHysteresisMeters = 24;
+  private decorationEnabled = true;
+  private decorationDensityBudget = 1;
 
   public constructor(container: HTMLElement) {
     this.container = container;
@@ -116,6 +149,8 @@ export class SceneComposer {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
     this.container.appendChild(this.renderer.domElement);
+    this.decorationGeometryByKind = this.createDecorationGeometries();
+    this.decorationMaterialByKind = this.createDecorationMaterials();
 
     const ambientLight = new AmbientLight(0xffffff, 0.7);
     const directionalLight = new DirectionalLight(0xffffff, 1.2);
@@ -129,6 +164,7 @@ export class SceneComposer {
       directionalLight,
       this.roadRoot,
       this.buildingRoot,
+      this.decorationRoot,
       this.prefetchLines,
       this.activeLines,
       this.currentTileLines,
@@ -143,6 +179,7 @@ export class SceneComposer {
 
   public render(): void {
     this.updateBuildingLodVisibility();
+    this.updateDecorationVisibility();
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -168,6 +205,7 @@ export class SceneComposer {
     this.worldOffsetNorth = offsetNorth;
     this.roadRoot.position.set(-offsetEast, 0, -offsetNorth);
     this.buildingRoot.position.set(-offsetEast, 0, -offsetNorth);
+    this.decorationRoot.position.set(-offsetEast, 0, -offsetNorth);
   }
 
   public setCurrentTileCoordinate(tile: TileCoordinate): void {
@@ -276,6 +314,76 @@ export class SceneComposer {
     this.buildingTileBundles.set(tileMesh.tileKey, bundle);
   }
 
+  public setDecorationEnabled(enabled: boolean): void {
+    this.decorationEnabled = enabled;
+    this.updateDecorationVisibility();
+  }
+
+  public setDecorationDensityBudget(densityBudget: number): void {
+    this.decorationDensityBudget = Math.max(0, Math.min(1, densityBudget));
+    this.updateDecorationVisibility();
+  }
+
+  public upsertDecorationTileMesh(tileMesh: DecorationTileMeshPayload): void {
+    this.removeDecorationTileMesh(tileMesh.tileKey);
+
+    const kindBundles: DecorationKindBundle[] = [];
+    const group = new Group();
+    group.name = `decoration-tile:${tileMesh.tileKey}`;
+
+    for (const kindPayload of tileMesh.instancesByKind) {
+      const instanceCount = Math.floor(kindPayload.transforms.length / 4);
+      if (instanceCount <= 0) {
+        continue;
+      }
+
+      const geometry = this.decorationGeometryByKind[kindPayload.kind];
+      const material = this.decorationMaterialByKind[kindPayload.kind];
+      const mesh = new InstancedMesh(geometry, material, instanceCount);
+      mesh.name = `decoration-${kindPayload.kind}`;
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+
+      for (let index = 0; index < instanceCount; index += 1) {
+        const base = index * 4;
+        const east = kindPayload.transforms[base + 0] ?? 0;
+        const north = kindPayload.transforms[base + 1] ?? 0;
+        const rotationY = kindPayload.transforms[base + 2] ?? 0;
+        const scale = kindPayload.transforms[base + 3] ?? 1;
+        this.instanceTransformHelper.position.set(east, 0, north);
+        this.instanceTransformHelper.rotation.set(0, rotationY, 0);
+        this.instanceTransformHelper.scale.set(scale, scale, scale);
+        this.instanceTransformHelper.updateMatrix();
+        this.instanceMatrix.copy(this.instanceTransformHelper.matrix);
+        mesh.setMatrixAt(index, this.instanceMatrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.count = instanceCount;
+      group.add(mesh);
+      kindBundles.push({
+        kind: kindPayload.kind,
+        mesh,
+        totalInstances: instanceCount,
+      });
+    }
+
+    if (kindBundles.length === 0) {
+      return;
+    }
+
+    this.decorationRoot.add(group);
+    const bundle: DecorationTileBundle = {
+      tileKey: tileMesh.tileKey,
+      group,
+      kindBundles,
+      tileCoordinate: this.parseTileCoordinateFromKey(tileMesh.tileKey),
+      centerEast: tileMesh.tileCenter.east,
+      centerNorth: tileMesh.tileCenter.north,
+    };
+    this.decorationTileBundles.set(tileMesh.tileKey, bundle);
+    this.updateDecorationVisibility();
+  }
+
   public updateTileDebugGrid(data: TileDebugGridData): void {
     this.updateLineGeometry(this.prefetchLines, data.prefetchTileBounds, 0.03);
     this.updateLineGeometry(this.activeLines, data.activeTileBounds, 0.06);
@@ -285,6 +393,7 @@ export class SceneComposer {
   public dispose(): void {
     this.clearRoadTiles();
     this.clearBuildingTiles();
+    this.clearDecorationTiles();
 
     this.prefetchLines.geometry.dispose();
     this.activeLines.geometry.dispose();
@@ -297,6 +406,12 @@ export class SceneComposer {
     this.roadCollisionMaterial.dispose();
     this.roadDebugLineMaterial.dispose();
     this.buildingMaterial.dispose();
+    for (const geometry of Object.values(this.decorationGeometryByKind)) {
+      geometry.dispose();
+    }
+    for (const material of Object.values(this.decorationMaterialByKind)) {
+      material.dispose();
+    }
 
     this.renderer.dispose();
     this.renderer.domElement.remove();
@@ -311,6 +426,12 @@ export class SceneComposer {
   private clearBuildingTiles(): void {
     for (const tileKey of this.buildingTileBundles.keys()) {
       this.removeBuildingTileMesh(tileKey);
+    }
+  }
+
+  private clearDecorationTiles(): void {
+    for (const tileKey of this.decorationTileBundles.keys()) {
+      this.removeDecorationTileMesh(tileKey);
     }
   }
 
@@ -339,12 +460,36 @@ export class SceneComposer {
     bundle.lod1Geometry.dispose();
   }
 
+  public removeDecorationTileMesh(tileKey: string): void {
+    const bundle = this.decorationTileBundles.get(tileKey);
+    if (bundle === undefined) {
+      return;
+    }
+
+    this.decorationTileBundles.delete(tileKey);
+    this.decorationRoot.remove(bundle.group);
+  }
+
   public getRoadTileCount(): number {
     return this.roadTileBundles.size;
   }
 
   public getBuildingTileCount(): number {
     return this.buildingTileBundles.size;
+  }
+
+  public getDecorationTileCount(): number {
+    return this.decorationTileBundles.size;
+  }
+
+  public getVisibleDecorationInstanceCount(): number {
+    let instanceCount = 0;
+    for (const bundle of this.decorationTileBundles.values()) {
+      for (const kind of bundle.kindBundles) {
+        instanceCount += kind.mesh.count;
+      }
+    }
+    return instanceCount;
   }
 
   private createRoadSurfaceGeometry(
@@ -453,6 +598,74 @@ export class SceneComposer {
     }
   }
 
+  private updateDecorationVisibility(): void {
+    if (this.decorationTileBundles.size === 0) {
+      return;
+    }
+
+    for (const bundle of this.decorationTileBundles.values()) {
+      const bandScale = this.resolveDecorationBandScale(bundle);
+      const budgetScale = this.decorationEnabled ? this.decorationDensityBudget : 0;
+      const totalScale = Math.max(0, Math.min(1, bandScale * budgetScale));
+      for (const kindBundle of bundle.kindBundles) {
+        if (totalScale <= 0) {
+          kindBundle.mesh.count = 0;
+          kindBundle.mesh.visible = false;
+          continue;
+        }
+
+        const rawCount = Math.floor(kindBundle.totalInstances * totalScale);
+        const visibleCount =
+          rawCount <= 0 && kindBundle.totalInstances > 0
+            ? 1
+            : Math.min(kindBundle.totalInstances, rawCount);
+        kindBundle.mesh.count = visibleCount;
+        kindBundle.mesh.visible = visibleCount > 0;
+      }
+    }
+  }
+
+  private resolveDecorationBandScale(bundle: DecorationTileBundle): number {
+    const focusTile = this.currentTileCoordinate;
+    const bundleTile = bundle.tileCoordinate;
+    if (focusTile !== null && bundleTile !== null) {
+      const deltaX = Math.abs(bundleTile.x - focusTile.x);
+      const deltaY = Math.abs(bundleTile.y - focusTile.y);
+      const chebyshevDistance = Math.max(deltaX, deltaY);
+      return this.resolveDecorationScaleFromTileDistance(chebyshevDistance);
+    }
+
+    const cameraPosition = this.camera.position;
+    const centerX = bundle.centerEast - this.worldOffsetEast;
+    const centerZ = bundle.centerNorth - this.worldOffsetNorth;
+    const deltaX = centerX - cameraPosition.x;
+    const deltaZ = centerZ - cameraPosition.z;
+    const distance = Math.hypot(deltaX, deltaZ);
+    if (distance <= 220) {
+      return 1;
+    }
+    if (distance <= 360) {
+      return 0.65;
+    }
+    if (distance <= 520) {
+      return 0.28;
+    }
+    return 0;
+  }
+
+  private resolveDecorationScaleFromTileDistance(distance: number): number {
+    if (distance <= 1) {
+      return 1;
+    }
+    if (distance === 2) {
+      return 0.65;
+    }
+    if (distance === 3) {
+      return 0.28;
+    }
+    return 0;
+  }
+
   private resolveTargetLod(bundle: BuildingTileBundle): 'lod0' | 'lod1' {
     const focusTile = this.currentTileCoordinate;
     const bundleTile = bundle.tileCoordinate;
@@ -499,5 +712,48 @@ export class SceneComposer {
     bundle.lodState = targetLod;
     bundle.lod0Mesh.visible = targetLod === 'lod0';
     bundle.lod1Mesh.visible = targetLod === 'lod1';
+  }
+
+  private createDecorationGeometries(): Readonly<Record<DecorationPropKind, BufferGeometry>> {
+    const tree = new ConeGeometry(0.95, 3.8, 7);
+    tree.translate(0, 1.9, 0);
+    const lamp = new CylinderGeometry(0.08, 0.12, 4.2, 6);
+    lamp.translate(0, 2.1, 0);
+    const sign = new BoxGeometry(0.72, 0.8, 0.1);
+    sign.translate(0, 1.55, 0);
+    const bench = new BoxGeometry(1.4, 0.46, 0.5);
+    bench.translate(0, 0.24, 0);
+
+    return {
+      tree,
+      lamp,
+      sign,
+      bench,
+    };
+  }
+
+  private createDecorationMaterials(): Readonly<Record<DecorationPropKind, MeshStandardMaterial>> {
+    return {
+      tree: new MeshStandardMaterial({
+        color: 0x2f855a,
+        roughness: 0.9,
+        metalness: 0.02,
+      }),
+      lamp: new MeshStandardMaterial({
+        color: 0xd1d5db,
+        roughness: 0.35,
+        metalness: 0.45,
+      }),
+      sign: new MeshStandardMaterial({
+        color: 0xf59e0b,
+        roughness: 0.7,
+        metalness: 0.1,
+      }),
+      bench: new MeshStandardMaterial({
+        color: 0x92400e,
+        roughness: 0.82,
+        metalness: 0.05,
+      }),
+    };
   }
 }

@@ -56,6 +56,39 @@ canvas {
   word-break: break-word;
 }
 
+.overlay-control-group {
+  margin: 8px 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.overlay-control-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  margin: 4px 0;
+  font-size: 12px;
+  color: #cbd5e1;
+}
+
+.overlay-control-row input[type='checkbox'] {
+  margin: 0;
+}
+
+.overlay-control-row input[type='range'] {
+  width: 100%;
+}
+
+.overlay-control-value {
+  min-width: 40px;
+  text-align: right;
+  color: #93c5fd;
+  font-variant-numeric: tabular-nums;
+}
+
 .hud-panel {
   top: 12px;
   left: 12px;

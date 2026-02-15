@@ -10,6 +10,10 @@ import type {
   BuildingFeature,
   BuildingPolygon,
   CacheMetricsSnapshot,
+  DecorationAreaFeature,
+  DecorationAreaKind,
+  DecorationPointFeature,
+  DecorationPointKind,
   GeoBoundsLatLon,
   PointMeters,
   RoadFeature,
@@ -19,9 +23,9 @@ import type {
   TileOSMData,
 } from './Types';
 
-const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v8';
-const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-meta-v3';
-const META_TILE_SCHEMA_VERSION = 'meta-tile-v5';
+const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v9';
+const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-decoration-meta-v4';
+const META_TILE_SCHEMA_VERSION = 'meta-tile-v6';
 const STATS_REFRESH_INTERVAL_MS = 2500;
 const POLYGON_POINT_EPSILON_METERS = 0.01;
 const RELATION_RING_SNAP_TOLERANCE_METERS = 0.35;
@@ -68,6 +72,18 @@ interface GlobalBuildingFeature {
   readonly properties: BuildingFeature['properties'];
 }
 
+interface GlobalDecorationPointFeature {
+  readonly id: string;
+  readonly kind: DecorationPointKind;
+  readonly point: PointMeters;
+}
+
+interface GlobalDecorationAreaFeature {
+  readonly id: string;
+  readonly kind: DecorationAreaKind;
+  readonly polygons: readonly BuildingPolygon[];
+}
+
 interface MetaTilePayload {
   readonly metaTileKey: string;
   readonly schemaVersion: string;
@@ -86,6 +102,8 @@ interface MetaTilePayload {
   };
   readonly roads: readonly GlobalRoadFeature[];
   readonly buildings: readonly GlobalBuildingFeature[];
+  readonly decorationPoints: readonly GlobalDecorationPointFeature[];
+  readonly decorationAreas: readonly GlobalDecorationAreaFeature[];
 }
 
 interface MetaTileFetchResult {
@@ -417,6 +435,8 @@ export class TileDataService {
   ): MetaTilePayload {
     const roads: GlobalRoadFeature[] = [];
     const buildings: GlobalBuildingFeature[] = [];
+    const decorationPoints: GlobalDecorationPointFeature[] = [];
+    const decorationAreas: GlobalDecorationAreaFeature[] = [];
     const waysById = new Map<number, OverpassWayElement>();
     for (const element of payload.elements) {
       if (element.type === 'way') {
@@ -425,8 +445,29 @@ export class TileDataService {
     }
 
     const buildingRelationMemberWayIds = new Set<number>();
+    const decorationRelationMemberWayIds = new Set<number>();
     for (const element of payload.elements) {
-      if (element.type !== 'relation' || !this.isBuildingRelation(element)) {
+      if (element.type !== 'relation') {
+        continue;
+      }
+
+      if (this.isBuildingRelation(element)) {
+        const relationPolygons = this.extractRelationPolygons(element, waysById);
+        if (relationPolygons.length > 0) {
+          for (const wayId of this.collectBuildingRelationWayIds(element)) {
+            buildingRelationMemberWayIds.add(wayId);
+          }
+
+          buildings.push({
+            id: `relation/${element.id}`,
+            polygons: relationPolygons,
+            properties: this.parseBuildingProperties(element.tags),
+          });
+        }
+      }
+
+      const decorationAreaKind = this.parseDecorationAreaKind(element.tags);
+      if (decorationAreaKind === null) {
         continue;
       }
 
@@ -434,19 +475,38 @@ export class TileDataService {
       if (relationPolygons.length === 0) {
         continue;
       }
-
       for (const wayId of this.collectBuildingRelationWayIds(element)) {
-        buildingRelationMemberWayIds.add(wayId);
+        decorationRelationMemberWayIds.add(wayId);
       }
-
-      buildings.push({
+      decorationAreas.push({
         id: `relation/${element.id}`,
+        kind: decorationAreaKind,
         polygons: relationPolygons,
-        properties: this.parseBuildingProperties(element.tags),
       });
     }
 
     for (const element of payload.elements) {
+      if (element.type === 'node') {
+        const pointKind = this.parseDecorationPointKind(element.tags);
+        if (pointKind === null) {
+          continue;
+        }
+
+        const globalPoint = this.normalizationProjection.latLonToLocalMeters({
+          latitude: element.lat,
+          longitude: element.lon,
+        });
+        decorationPoints.push({
+          id: `node/${element.id}`,
+          kind: pointKind,
+          point: {
+            east: globalPoint.east,
+            north: globalPoint.north,
+          },
+        });
+        continue;
+      }
+
       if (element.type !== 'way') {
         continue;
       }
@@ -466,6 +526,23 @@ export class TileDataService {
             maxspeed: way.tags?.maxspeed ?? null,
           },
         });
+      }
+
+      const decorationAreaKind = this.parseDecorationAreaKind(way.tags);
+      if (decorationAreaKind !== null && !decorationRelationMemberWayIds.has(way.id)) {
+        const decorationOuter = this.sanitizePolygonRing(geometry, WAY_RING_CLOSING_TOLERANCE_METERS);
+        if (decorationOuter !== null) {
+          decorationAreas.push({
+            id: `way/${way.id}`,
+            kind: decorationAreaKind,
+            polygons: [
+              {
+                outer: decorationOuter,
+                holes: [],
+              },
+            ],
+          });
+        }
       }
 
       if (!this.isBuildingWay(way)) {
@@ -506,6 +583,8 @@ export class TileDataService {
       globalBounds: context.globalBounds,
       roads,
       buildings,
+      decorationPoints,
+      decorationAreas,
     };
   }
 
@@ -588,6 +667,78 @@ export class TileDataService {
       });
     }
 
+    const decorationPoints: DecorationPointFeature[] = [];
+    for (const feature of meta.decorationPoints) {
+      if (!this.pointInsideBounds(feature.point, expandedBounds)) {
+        continue;
+      }
+      if (
+        !this.isPointOwnedByTile(
+          feature.point,
+          params.tileCoordinate,
+          params.tileSizeMeters,
+        )
+      ) {
+        continue;
+      }
+
+      decorationPoints.push({
+        id: feature.id,
+        kind: feature.kind,
+        point: {
+          east: feature.point.east - params.tileOriginGlobalMeters.east,
+          north: feature.point.north - params.tileOriginGlobalMeters.north,
+        },
+      });
+    }
+
+    const decorationAreas: DecorationAreaFeature[] = [];
+    for (const area of meta.decorationAreas) {
+      const localPolygons: BuildingPolygon[] = [];
+      for (const polygon of area.polygons) {
+        if (!this.polygonBoundsIntersects(polygon.outer, expandedBounds)) {
+          continue;
+        }
+        if (
+          !this.isPolygonOwnedByTile(
+            polygon.outer,
+            params.tileCoordinate,
+            params.tileSizeMeters,
+          )
+        ) {
+          continue;
+        }
+
+        const localOuter = polygon.outer.map((point) => ({
+          east: point.east - params.tileOriginGlobalMeters.east,
+          north: point.north - params.tileOriginGlobalMeters.north,
+        }));
+        const localHoles = polygon.holes
+          .map((hole) =>
+            hole.map((point) => ({
+              east: point.east - params.tileOriginGlobalMeters.east,
+              north: point.north - params.tileOriginGlobalMeters.north,
+            })),
+          )
+          .filter((hole) => hole.length >= 4);
+
+        localPolygons.push({
+          outer: this.ensureClosedPolygon(localOuter),
+          holes: localHoles.map((hole) => this.ensureClosedPolygon(hole)),
+        });
+      }
+
+      if (localPolygons.length === 0) {
+        continue;
+      }
+
+      decorationAreas.push({
+        id: area.id,
+        kind: area.kind,
+        polygons: localPolygons,
+      });
+    }
+
     return {
       tileKey: params.tileKey,
       schemaVersion: NORMALIZED_SCHEMA_VERSION,
@@ -602,6 +753,8 @@ export class TileDataService {
       tileSizeMeters: params.tileSizeMeters,
       roads,
       buildings,
+      decorationPoints,
+      decorationAreas,
       emptyReason: roads.length === 0 ? 'real-empty' : 'not-empty',
     };
   }
@@ -772,6 +925,59 @@ export class TileDataService {
       heightMeters: this.parseHeightMeters(tags?.height ?? null),
       roofShape: this.parseRoofShape(tags?.['roof:shape'] ?? null),
     };
+  }
+
+  private parseDecorationPointKind(tags: Record<string, string> | undefined): DecorationPointKind | null {
+    if (tags === undefined) {
+      return null;
+    }
+
+    const natural = tags.natural?.trim().toLowerCase();
+    const highway = tags.highway?.trim().toLowerCase();
+    const amenity = tags.amenity?.trim().toLowerCase();
+    const trafficSign = tags.traffic_sign;
+
+    if (natural === 'tree') {
+      return 'tree';
+    }
+
+    if (highway === 'street_lamp') {
+      return 'lamp';
+    }
+
+    if (amenity === 'bench') {
+      return 'bench';
+    }
+
+    if (typeof trafficSign === 'string' && trafficSign.trim().length > 0) {
+      return 'sign';
+    }
+
+    return null;
+  }
+
+  private parseDecorationAreaKind(tags: Record<string, string> | undefined): DecorationAreaKind | null {
+    if (tags === undefined) {
+      return null;
+    }
+
+    const landuse = tags.landuse?.trim().toLowerCase();
+    const natural = tags.natural?.trim().toLowerCase();
+    const leisure = tags.leisure?.trim().toLowerCase();
+
+    if (landuse === 'forest' || natural === 'wood') {
+      return 'forest';
+    }
+
+    if (leisure === 'park') {
+      return 'park';
+    }
+
+    if (natural === 'scrub') {
+      return 'scrub';
+    }
+
+    return null;
   }
 
   private extractRelationPolygons(
@@ -1043,6 +1249,16 @@ export class TileDataService {
     }
     const ownerTileX = Math.floor(centroid.east / tileSizeMeters);
     const ownerTileY = Math.floor(centroid.north / tileSizeMeters);
+    return ownerTileX === tileCoordinate.x && ownerTileY === tileCoordinate.y;
+  }
+
+  private isPointOwnedByTile(
+    point: PointMeters,
+    tileCoordinate: { readonly x: number; readonly y: number },
+    tileSizeMeters: number,
+  ): boolean {
+    const ownerTileX = Math.floor(point.east / tileSizeMeters);
+    const ownerTileY = Math.floor(point.north / tileSizeMeters);
     return ownerTileX === tileCoordinate.x && ownerTileY === tileCoordinate.y;
   }
 

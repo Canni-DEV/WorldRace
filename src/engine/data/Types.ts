@@ -30,6 +30,22 @@ export interface BuildingPolygon {
   readonly holes: readonly (readonly PointMeters[])[];
 }
 
+export type DecorationPointKind = 'tree' | 'lamp' | 'sign' | 'bench';
+
+export interface DecorationPointFeature {
+  readonly id: string;
+  readonly kind: DecorationPointKind;
+  readonly point: PointMeters;
+}
+
+export type DecorationAreaKind = 'forest' | 'park' | 'scrub';
+
+export interface DecorationAreaFeature {
+  readonly id: string;
+  readonly kind: DecorationAreaKind;
+  readonly polygons: readonly BuildingPolygon[];
+}
+
 export interface RoadFeature {
   readonly id: string;
   readonly points: readonly PointMeters[];
@@ -59,6 +75,8 @@ export interface TileOSMData {
   readonly tileSizeMeters: number;
   readonly roads: readonly RoadFeature[];
   readonly buildings: readonly BuildingFeature[];
+  readonly decorationPoints: readonly DecorationPointFeature[];
+  readonly decorationAreas: readonly DecorationAreaFeature[];
   readonly emptyReason: TileEmptyReason;
 }
 

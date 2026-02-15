@@ -185,19 +185,20 @@
 
 ### PR-09: Decoration layer (natural + urban props)
 **Goal:** lightweight environmental context without harming fidelity/perf.
+**Status:** implemented locally.
 
 **Checklist**
-- [ ] Add deterministic seeded placement per tile.
-- [ ] Support direct OSM natural features (example: `natural=tree` points).
-- [ ] Support area decoration masks (forest/park/scrub) via Poisson sampling.
-- [ ] Add exclusion masks to avoid roads/buildings overlap.
-- [ ] Add simple stylized assets (trees, lamps, signs, benches) with instancing.
-- [ ] Add distance-based density scaling and culling bands.
+- [x] Add deterministic seeded placement per tile.
+- [x] Support direct OSM natural features (example: `natural=tree` points).
+- [x] Support area decoration masks (forest/park/scrub) via Poisson sampling.
+- [x] Add exclusion masks to avoid roads/buildings overlap.
+- [x] Add simple stylized assets (trees, lamps, signs, benches) with instancing.
+- [x] Add distance-based density scaling and culling bands.
 
 **Acceptance**
-- [ ] Decoration is stable across reloads (same seed -> same placement).
-- [ ] Props never invade drivable surface or building interiors.
-- [ ] Decoration can be toggled and budgeted from debug panel.
+- [x] Decoration is stable across reloads (same seed -> same placement).
+- [x] Props never invade drivable surface or building interiors.
+- [x] Decoration can be toggled and budgeted from debug panel.
 
 ---
 

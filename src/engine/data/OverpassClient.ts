@@ -219,6 +219,16 @@ export class OverpassClient {
   way["highway"](${bbox});
   way["building"](${bbox});
   relation["building"](${bbox});
+  node["natural"="tree"](${bbox});
+  node["highway"="street_lamp"](${bbox});
+  node["amenity"="bench"](${bbox});
+  node["traffic_sign"](${bbox});
+  way["landuse"="forest"](${bbox});
+  way["natural"~"^(wood|scrub)$"](${bbox});
+  way["leisure"="park"](${bbox});
+  relation["landuse"="forest"](${bbox});
+  relation["natural"~"^(wood|scrub)$"](${bbox});
+  relation["leisure"="park"](${bbox});
 );
 out geom tags;`;
   }
