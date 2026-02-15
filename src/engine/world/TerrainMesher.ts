@@ -6,7 +6,7 @@ interface TerrainMesherConfig {
 }
 
 const defaultConfig: TerrainMesherConfig = {
-  floorHeightMeters: -0.03,
+  floorHeightMeters: -0.04,
 };
 
 export class TerrainMesher {

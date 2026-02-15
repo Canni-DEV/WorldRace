@@ -113,6 +113,9 @@ export class SceneComposer {
     color: 0x2c313a,
     roughness: 0.95,
     metalness: 0.02,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
   });
   private readonly roadWireframeMaterial = new MeshBasicMaterial({
     color: 0x94a3b8,
@@ -171,7 +174,7 @@ export class SceneComposer {
     this.scene = new Scene();
     this.scene.background = new Color(0x0a1325);
 
-    this.camera = new PerspectiveCamera(60, 1, 0.1, 3000);
+    this.camera = new PerspectiveCamera(60, 1, 0.75, 1600);
     this.camera.position.set(16, 12, 16);
     this.camera.lookAt(0, 0, 0);
 
