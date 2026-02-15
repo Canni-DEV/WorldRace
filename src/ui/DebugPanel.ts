@@ -19,6 +19,7 @@ export interface DebugPanelMetrics {
   roadMeshTriangleCount: number;
   roadCollisionTriangleCount: number;
   roadMeshWidthRange: string;
+  roadJunctionSummary: string;
   roadDebugOverlayEnabled: boolean;
   renderedRoadTiles: number;
 }
@@ -37,6 +38,7 @@ export class DebugPanel {
   private readonly topologyStatsElement: HTMLParagraphElement;
   private readonly roadMeshCountsElement: HTMLParagraphElement;
   private readonly roadMeshStatsElement: HTMLParagraphElement;
+  private readonly roadJunctionElement: HTMLParagraphElement;
   private readonly roadDebugElement: HTMLParagraphElement;
   private readonly drawCallsElement: HTMLParagraphElement;
   private readonly trianglesElement: HTMLParagraphElement;
@@ -85,6 +87,9 @@ export class DebugPanel {
     this.roadMeshStatsElement = document.createElement('p');
     this.roadMeshStatsElement.className = 'overlay-row';
 
+    this.roadJunctionElement = document.createElement('p');
+    this.roadJunctionElement.className = 'overlay-row';
+
     this.roadDebugElement = document.createElement('p');
     this.roadDebugElement.className = 'overlay-row';
 
@@ -108,6 +113,7 @@ export class DebugPanel {
       this.topologyStatsElement,
       this.roadMeshCountsElement,
       this.roadMeshStatsElement,
+      this.roadJunctionElement,
       this.roadDebugElement,
       this.drawCallsElement,
       this.trianglesElement,
@@ -135,6 +141,7 @@ export class DebugPanel {
       roadMeshTriangleCount: 0,
       roadCollisionTriangleCount: 0,
       roadMeshWidthRange: '0-0',
+      roadJunctionSummary: '-',
       roadDebugOverlayEnabled: false,
       renderedRoadTiles: 0,
     });
@@ -153,6 +160,7 @@ export class DebugPanel {
     this.topologyStatsElement.textContent = `Topology stats: splits ${metrics.topologyIntersectionSplits} | dropped ${metrics.topologyDroppedSegments} | stitched ${metrics.topologyStitchedNodes}`;
     this.roadMeshCountsElement.textContent = `Road mesh: ${metrics.roadMeshEdgeCount} edges | ${metrics.roadMeshTriangleCount} tris | collision ${metrics.roadCollisionTriangleCount} tris`;
     this.roadMeshStatsElement.textContent = `Width range: ${metrics.roadMeshWidthRange} m`;
+    this.roadJunctionElement.textContent = `Junctions: ${metrics.roadJunctionSummary}`;
     this.roadDebugElement.textContent = `Road debug: ${metrics.roadDebugOverlayEnabled ? 'on' : 'off'} | rendered tiles ${metrics.renderedRoadTiles}`;
     this.drawCallsElement.textContent = `Draw calls: ${metrics.drawCalls}`;
     this.trianglesElement.textContent = `Triangles: ${metrics.triangles}`;

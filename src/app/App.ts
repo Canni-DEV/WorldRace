@@ -47,6 +47,13 @@ const EMPTY_ROAD_MESH_STATS: RoadMeshStats = {
   collisionTriangleCount: 0,
   minResolvedWidthMeters: 0,
   maxResolvedWidthMeters: 0,
+  junctionNodesConsidered: 0,
+  junctionPolygonsBuilt: 0,
+  junctionTriangles: 0,
+  junctionMiterCorners: 0,
+  junctionBevelCorners: 0,
+  junctionFallbackCorners: 0,
+  junctionTriangulationFailures: 0,
 };
 
 export class App {
@@ -84,7 +91,7 @@ export class App {
   };
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
-    if (event.code !== 'Backquote') {
+    if (event.code !== 'KeyB') {
       return;
     }
 
@@ -160,7 +167,7 @@ export class App {
       this.hud.update({
         fps,
         frameMs: deltaSeconds * 1000,
-        status: 'Move: WASD/Arrows, Up/Down: E/Q, RMB look, ` toggles road debug',
+        status: 'Move: WASD/Arrows, Up/Down: E/Q, RMB look, B toggles road debug',
         anchorEastMeters: spatialState.anchorEastMeters,
         anchorNorthMeters: spatialState.anchorNorthMeters,
         anchorLatitude: spatialState.anchorLatitude,
@@ -197,6 +204,7 @@ export class App {
         roadMeshTriangleCount: this.currentRoadMeshStats.triangleCount,
         roadCollisionTriangleCount: this.currentRoadMeshStats.collisionTriangleCount,
         roadMeshWidthRange: this.formatRoadWidthRange(this.currentRoadMeshStats),
+        roadJunctionSummary: this.formatRoadJunctionSummary(this.currentRoadMeshStats),
         roadDebugOverlayEnabled: this.roadDebugOverlayEnabled,
         renderedRoadTiles: this.sceneComposer.getRoadTileCount(),
       });
@@ -352,6 +360,10 @@ export class App {
 
   private formatRoadWidthRange(stats: RoadMeshStats): string {
     return `${stats.minResolvedWidthMeters.toFixed(1)}-${stats.maxResolvedWidthMeters.toFixed(1)}`;
+  }
+
+  private formatRoadJunctionSummary(stats: RoadMeshStats): string {
+    return `nodes ${stats.junctionNodesConsidered} | polys ${stats.junctionPolygonsBuilt} | tris ${stats.junctionTriangles} | m/b/f ${stats.junctionMiterCorners}/${stats.junctionBevelCorners}/${stats.junctionFallbackCorners} | fail ${stats.junctionTriangulationFailures}`;
   }
 
   private createTileFetchParams(currentTile: TileCoordinate, tileKey: string): TileFetchParams {

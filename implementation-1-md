@@ -123,19 +123,20 @@
 
 ### PR-06: Road intersections (junction meshing)
 **Goal:** remove visual breaks at crossings and merges.
+**Status:** implemented locally.
 
 **Checklist**
-- [ ] Build junction polygons by sorting branch edges by angle.
-- [ ] Resolve join style policy (`miter`, `bevel`, fallback by angle threshold).
-- [ ] Triangulate junction fill and weld with incoming ribbons.
-- [ ] Add turn pocket handling for acute intersections (simple fallback allowed).
-- [ ] Add seam suppression and normal/tangent consistency checks.
-- [ ] Add geometry diagnostics for failed triangulation cases.
+- [x] Build junction polygons by sorting branch edges by angle.
+- [x] Resolve join style policy (`miter`, `bevel`, fallback by angle threshold).
+- [x] Triangulate junction fill and weld with incoming ribbons.
+- [x] Add turn pocket handling for acute intersections (simple fallback allowed).
+- [x] Add seam suppression and normal/tangent consistency checks.
+- [x] Add geometry diagnostics for failed triangulation cases.
 
 **Acceptance**
-- [ ] Major intersections render without cracks/holes.
-- [ ] No z-fighting at standard crossing cases.
-- [ ] Junction failures fall back gracefully without app crash.
+- [x] Major intersections render without cracks/holes.
+- [x] No z-fighting at standard crossing cases.
+- [x] Junction failures fall back gracefully without app crash.
 
 ---
 

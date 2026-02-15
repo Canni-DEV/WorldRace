@@ -7,6 +7,13 @@ export interface RoadMeshStats {
   readonly collisionTriangleCount: number;
   readonly minResolvedWidthMeters: number;
   readonly maxResolvedWidthMeters: number;
+  readonly junctionNodesConsidered: number;
+  readonly junctionPolygonsBuilt: number;
+  readonly junctionTriangles: number;
+  readonly junctionMiterCorners: number;
+  readonly junctionBevelCorners: number;
+  readonly junctionFallbackCorners: number;
+  readonly junctionTriangulationFailures: number;
 }
 
 export interface RoadTileMeshPayload {
