@@ -19,18 +19,19 @@
 
 ### PR-01: Foundation and deploy baseline
 **Goal:** runnable app, quality gates, and deploy path.
+**Status:** implemented locally (public Pages URL pending first deploy from `main`).
 
 **Checklist**
-- [ ] Bootstrap Vite + TypeScript + Three.js app shell.
-- [ ] Add lint + format + typecheck scripts.
-- [ ] Add GitHub Actions workflow for build and GitHub Pages deploy.
-- [ ] Add HUD placeholder and debug overlay scaffold.
-- [ ] Add attribution page in `public/attribution/osm.html`.
+- [x] Bootstrap Vite + TypeScript + Three.js app shell.
+- [x] Add lint + format + typecheck scripts.
+- [x] Add GitHub Actions workflow for build and GitHub Pages deploy.
+- [x] Add HUD placeholder and debug overlay scaffold.
+- [x] Add attribution page in `public/attribution/osm.html`.
 
 **Acceptance**
 - [ ] Public Pages URL serves app.
-- [ ] CI enforces lint, typecheck, and build.
-- [ ] Empty scene renders with stable camera loop.
+- [x] CI enforces lint, typecheck, and build.
+- [x] Empty scene renders with stable camera loop.
 
 ---
 
