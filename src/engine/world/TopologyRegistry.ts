@@ -35,6 +35,16 @@ export class TopologyRegistry {
     return this.topologyByTileKey.size;
   }
 
+  public removeTile(tileKey: string): void {
+    const existing = this.topologyByTileKey.get(tileKey);
+    if (existing === undefined) {
+      return;
+    }
+
+    this.topologyByTileKey.delete(tileKey);
+    this.releaseTile(existing);
+  }
+
   private assignGlobalNodes(localTopology: TileRoadTopologyLocal): TileRoadTopology {
     const nodeByKey = new Map<string, TopologyNode>();
     let stitchedNodes = 0;

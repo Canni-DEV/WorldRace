@@ -22,6 +22,21 @@ export interface DebugPanelMetrics {
   roadJunctionSummary: string;
   roadDebugOverlayEnabled: boolean;
   renderedRoadTiles: number;
+  streamDesiredTiles: number;
+  streamLoadedTiles: number;
+  streamPendingTiles: number;
+  streamInflightFetches: number;
+  streamInflightBuilds: number;
+  streamLastFetchMs: number;
+  streamLastBuildMs: number;
+  streamCanceledLoads: number;
+  streamDisposedTiles: number;
+  streamFetchErrors: number;
+  streamBuildErrors: number;
+  streamApproxMeshMegabytes: number;
+  streamBuildMode: 'worker' | 'main-thread';
+  gpuGeometries: number;
+  gpuTextures: number;
 }
 
 export class DebugPanel {
@@ -40,6 +55,11 @@ export class DebugPanel {
   private readonly roadMeshStatsElement: HTMLParagraphElement;
   private readonly roadJunctionElement: HTMLParagraphElement;
   private readonly roadDebugElement: HTMLParagraphElement;
+  private readonly streamQueueElement: HTMLParagraphElement;
+  private readonly streamTimingElement: HTMLParagraphElement;
+  private readonly streamReliabilityElement: HTMLParagraphElement;
+  private readonly streamMemoryElement: HTMLParagraphElement;
+  private readonly gpuResourcesElement: HTMLParagraphElement;
   private readonly drawCallsElement: HTMLParagraphElement;
   private readonly trianglesElement: HTMLParagraphElement;
 
@@ -93,6 +113,21 @@ export class DebugPanel {
     this.roadDebugElement = document.createElement('p');
     this.roadDebugElement.className = 'overlay-row';
 
+    this.streamQueueElement = document.createElement('p');
+    this.streamQueueElement.className = 'overlay-row';
+
+    this.streamTimingElement = document.createElement('p');
+    this.streamTimingElement.className = 'overlay-row';
+
+    this.streamReliabilityElement = document.createElement('p');
+    this.streamReliabilityElement.className = 'overlay-row';
+
+    this.streamMemoryElement = document.createElement('p');
+    this.streamMemoryElement.className = 'overlay-row';
+
+    this.gpuResourcesElement = document.createElement('p');
+    this.gpuResourcesElement.className = 'overlay-row';
+
     this.drawCallsElement = document.createElement('p');
     this.drawCallsElement.className = 'overlay-row';
 
@@ -115,6 +150,11 @@ export class DebugPanel {
       this.roadMeshStatsElement,
       this.roadJunctionElement,
       this.roadDebugElement,
+      this.streamQueueElement,
+      this.streamTimingElement,
+      this.streamReliabilityElement,
+      this.streamMemoryElement,
+      this.gpuResourcesElement,
       this.drawCallsElement,
       this.trianglesElement,
     );
@@ -144,6 +184,21 @@ export class DebugPanel {
       roadJunctionSummary: '-',
       roadDebugOverlayEnabled: false,
       renderedRoadTiles: 0,
+      streamDesiredTiles: 0,
+      streamLoadedTiles: 0,
+      streamPendingTiles: 0,
+      streamInflightFetches: 0,
+      streamInflightBuilds: 0,
+      streamLastFetchMs: 0,
+      streamLastBuildMs: 0,
+      streamCanceledLoads: 0,
+      streamDisposedTiles: 0,
+      streamFetchErrors: 0,
+      streamBuildErrors: 0,
+      streamApproxMeshMegabytes: 0,
+      streamBuildMode: 'main-thread',
+      gpuGeometries: 0,
+      gpuTextures: 0,
     });
   }
 
@@ -162,6 +217,11 @@ export class DebugPanel {
     this.roadMeshStatsElement.textContent = `Width range: ${metrics.roadMeshWidthRange} m`;
     this.roadJunctionElement.textContent = `Junctions: ${metrics.roadJunctionSummary}`;
     this.roadDebugElement.textContent = `Road debug: ${metrics.roadDebugOverlayEnabled ? 'on' : 'off'} | rendered tiles ${metrics.renderedRoadTiles}`;
+    this.streamQueueElement.textContent = `Stream queue: desired ${metrics.streamDesiredTiles} | loaded ${metrics.streamLoadedTiles} | pending ${metrics.streamPendingTiles} | fetch ${metrics.streamInflightFetches} | build ${metrics.streamInflightBuilds}`;
+    this.streamTimingElement.textContent = `Stream timings: fetch ${metrics.streamLastFetchMs.toFixed(1)} ms | build ${metrics.streamLastBuildMs.toFixed(1)} ms | mode ${metrics.streamBuildMode}`;
+    this.streamReliabilityElement.textContent = `Stream reliability: cancel ${metrics.streamCanceledLoads} | disposed ${metrics.streamDisposedTiles} | errors f/b ${metrics.streamFetchErrors}/${metrics.streamBuildErrors}`;
+    this.streamMemoryElement.textContent = `Stream memory: mesh approx ${metrics.streamApproxMeshMegabytes.toFixed(2)} MB`;
+    this.gpuResourcesElement.textContent = `GPU resources: geometries ${metrics.gpuGeometries} | textures ${metrics.gpuTextures}`;
     this.drawCallsElement.textContent = `Draw calls: ${metrics.drawCalls}`;
     this.trianglesElement.textContent = `Triangles: ${metrics.triangles}`;
   }

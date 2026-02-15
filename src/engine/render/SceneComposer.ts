@@ -29,6 +29,8 @@ interface RoadTileBundle {
 export interface RenderStats {
   drawCalls: number;
   triangles: number;
+  geometries: number;
+  textures: number;
 }
 
 type DebugLineSegments = LineSegments<BufferGeometry, LineBasicMaterial>;
@@ -125,6 +127,8 @@ export class SceneComposer {
     return {
       drawCalls: this.renderer.info.render.calls,
       triangles: this.renderer.info.render.triangles,
+      geometries: this.renderer.info.memory.geometries,
+      textures: this.renderer.info.memory.textures,
     };
   }
 

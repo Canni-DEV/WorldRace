@@ -142,19 +142,20 @@
 
 ### PR-07: Streaming runtime + workers + disposal
 **Goal:** stable load/unload loop around anchor.
+**Status:** implemented locally.
 
 **Checklist**
-- [ ] Implement `WorldStream` desired/active tile diff each frame tick.
-- [ ] Load queue with priorities (center tile > near ring > prefetch ring).
-- [ ] Build queue offloaded to Web Worker(s) where practical.
-- [ ] Add cancellation for obsolete tiles when anchor moves fast.
-- [ ] Implement strict disposal of geometries/materials/textures on unload.
-- [ ] Add runtime metrics: fetch ms, build ms, GPU objects, approx memory.
+- [x] Implement `WorldStream` desired/active tile diff each frame tick.
+- [x] Load queue with priorities (center tile > near ring > prefetch ring).
+- [x] Build queue offloaded to Web Worker(s) where practical.
+- [x] Add cancellation for obsolete tiles when anchor moves fast.
+- [x] Implement strict disposal of geometries/materials/textures on unload.
+- [x] Add runtime metrics: fetch ms, build ms, GPU objects, approx memory.
 
 **Acceptance**
-- [ ] Fly-through loads new tiles and unloads old tiles without leaks.
-- [ ] FPS remains stable under continuous movement.
-- [ ] No unbounded growth in geometry/material counts.
+- [x] Fly-through loads new tiles and unloads old tiles without leaks.
+- [x] FPS remains stable under continuous movement.
+- [x] No unbounded growth in geometry/material counts.
 
 ---
 

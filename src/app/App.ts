@@ -6,8 +6,8 @@ import { TileSystem } from '../engine/geo/TileSystem';
 import { SceneComposer } from '../engine/render/SceneComposer';
 import { Anchor } from '../engine/sim/Anchor';
 import { CameraController } from '../engine/sim/CameraController';
-import { RoadMesher } from '../engine/world/RoadMesher';
 import { TopologyRegistry } from '../engine/world/TopologyRegistry';
+import { WorldStream } from '../engine/world/WorldStream';
 import { DebugPanel } from '../ui/DebugPanel';
 import { HUD } from '../ui/HUD';
 import type { CacheMetricsSnapshot, TileFetchParams } from '../engine/data/Types';
@@ -66,21 +66,9 @@ export class App {
   private readonly anchor: Anchor;
   private readonly cameraController: CameraController;
   private readonly tileDataService: TileDataService;
-  private readonly roadMesher: RoadMesher;
-  private readonly topologyRegistry: TopologyRegistry;
+  private readonly worldStream: WorldStream;
   private globalOffsetMeters: GlobalOffsetMeters = { east: 0, north: 0 };
   private floatingOriginRecenters = 0;
-  private lastTileDataRequestKey: string | null = null;
-  private lastRenderedRoadTileKey: string | null = null;
-  private currentTileDataStatus = 'idle';
-  private currentTileRoadsCount = 0;
-  private currentTileBuildingsCount = 0;
-  private currentTopologyNodeCount = 0;
-  private currentTopologyEdgeCount = 0;
-  private currentTopologyIntersectionSplits = 0;
-  private currentTopologyDroppedSegments = 0;
-  private currentTopologyStitchedNodes = 0;
-  private currentRoadMeshStats: RoadMeshStats = EMPTY_ROAD_MESH_STATS;
   private roadDebugOverlayEnabled = false;
   private cacheMetrics: CacheMetricsSnapshot = EMPTY_CACHE_METRICS;
   private frameHandle = 0;
@@ -121,14 +109,26 @@ export class App {
         cacheTtlMs: runtimeConfig.cacheTtlMs,
       },
     );
-    this.roadMesher = new RoadMesher();
-    this.topologyRegistry = new TopologyRegistry();
+    const topologyRegistry = new TopologyRegistry();
     this.tileSystem = new TileSystem(runtimeConfig.tileSizeMeters);
     this.anchor = new Anchor(this.sceneComposer.getCamera().position);
     this.cameraController = new CameraController(
       this.sceneComposer.getCamera(),
       this.sceneComposer.getInputElement(),
       this.anchor,
+    );
+    this.worldStream = new WorldStream(
+      {
+        tileSystem: this.tileSystem,
+        tileDataService: this.tileDataService,
+        topologyRegistry,
+        sceneComposer: this.sceneComposer,
+        createTileFetchParams: (tile, tileKey) => this.createTileFetchParams(tile, tileKey),
+      },
+      {
+        maxConcurrentLoads: runtimeConfig.streamMaxConcurrentLoads,
+        useBuildWorker: runtimeConfig.streamUseBuildWorker,
+      },
     );
 
     this.onResize();
@@ -155,7 +155,8 @@ export class App {
       this.cameraController.update(deltaSeconds);
       this.applyFloatingOriginIfNeeded();
       const spatialState = this.computeSpatialState();
-      this.ensureTileDataForCurrentTile(spatialState);
+      this.worldStream.update(spatialState.currentTile, spatialState.tileRings);
+      const streamSnapshot = this.worldStream.getSnapshot();
       this.cacheMetrics = this.tileDataService.getMetricsSnapshot();
       this.sceneComposer.setWorldOffset(this.globalOffsetMeters.east, this.globalOffsetMeters.north);
       this.sceneComposer.updateTileDebugGrid(spatialState.tileDebugGridData);
@@ -192,21 +193,40 @@ export class App {
         activeTileSample: this.formatTileSample(spatialState.tileRings.activeTiles),
         prefetchTileSample: this.formatTileSample(spatialState.tileRings.prefetchTiles),
         floatingOriginRecenters: this.floatingOriginRecenters,
-        tileDataStatus: this.currentTileDataStatus,
-        tileRoadsCount: this.currentTileRoadsCount,
-        tileBuildingsCount: this.currentTileBuildingsCount,
-        topologyNodeCount: this.currentTopologyNodeCount,
-        topologyEdgeCount: this.currentTopologyEdgeCount,
-        topologyIntersectionSplits: this.currentTopologyIntersectionSplits,
-        topologyDroppedSegments: this.currentTopologyDroppedSegments,
-        topologyStitchedNodes: this.currentTopologyStitchedNodes,
-        roadMeshEdgeCount: this.currentRoadMeshStats.edgeCountMeshed,
-        roadMeshTriangleCount: this.currentRoadMeshStats.triangleCount,
-        roadCollisionTriangleCount: this.currentRoadMeshStats.collisionTriangleCount,
-        roadMeshWidthRange: this.formatRoadWidthRange(this.currentRoadMeshStats),
-        roadJunctionSummary: this.formatRoadJunctionSummary(this.currentRoadMeshStats),
+        tileDataStatus: streamSnapshot.status,
+        tileRoadsCount: streamSnapshot.currentTile?.roadsCount ?? 0,
+        tileBuildingsCount: streamSnapshot.currentTile?.buildingsCount ?? 0,
+        topologyNodeCount: streamSnapshot.currentTile?.topologyNodeCount ?? 0,
+        topologyEdgeCount: streamSnapshot.currentTile?.topologyEdgeCount ?? 0,
+        topologyIntersectionSplits: streamSnapshot.currentTile?.topologyIntersectionSplits ?? 0,
+        topologyDroppedSegments: streamSnapshot.currentTile?.topologyDroppedSegments ?? 0,
+        topologyStitchedNodes: streamSnapshot.currentTile?.topologyStitchedNodes ?? 0,
+        roadMeshEdgeCount: streamSnapshot.currentTile?.roadMeshStats.edgeCountMeshed ?? 0,
+        roadMeshTriangleCount: streamSnapshot.currentTile?.roadMeshStats.triangleCount ?? 0,
+        roadCollisionTriangleCount: streamSnapshot.currentTile?.roadMeshStats.collisionTriangleCount ?? 0,
+        roadMeshWidthRange: this.formatRoadWidthRange(
+          streamSnapshot.currentTile?.roadMeshStats ?? EMPTY_ROAD_MESH_STATS,
+        ),
+        roadJunctionSummary: this.formatRoadJunctionSummary(
+          streamSnapshot.currentTile?.roadMeshStats ?? EMPTY_ROAD_MESH_STATS,
+        ),
         roadDebugOverlayEnabled: this.roadDebugOverlayEnabled,
         renderedRoadTiles: this.sceneComposer.getRoadTileCount(),
+        streamDesiredTiles: streamSnapshot.desiredTiles,
+        streamLoadedTiles: streamSnapshot.loadedTiles,
+        streamPendingTiles: streamSnapshot.pendingTiles,
+        streamInflightFetches: streamSnapshot.inflightFetches,
+        streamInflightBuilds: streamSnapshot.inflightBuilds,
+        streamLastFetchMs: streamSnapshot.lastFetchMs,
+        streamLastBuildMs: streamSnapshot.lastBuildMs,
+        streamCanceledLoads: streamSnapshot.canceledLoads,
+        streamDisposedTiles: streamSnapshot.disposedTiles,
+        streamFetchErrors: streamSnapshot.fetchErrors,
+        streamBuildErrors: streamSnapshot.buildErrors,
+        streamApproxMeshMegabytes: streamSnapshot.approxMeshMegabytes,
+        streamBuildMode: streamSnapshot.buildMode,
+        gpuGeometries: renderStats.geometries,
+        gpuTextures: renderStats.textures,
       });
 
       this.frameHandle = window.requestAnimationFrame(animate);
@@ -228,6 +248,7 @@ export class App {
     this.stop();
     window.removeEventListener('resize', this.onResize);
     window.removeEventListener('keydown', this.onKeyDown);
+    this.worldStream.dispose();
     this.cameraController.dispose();
     this.hud.dispose();
     this.debugPanel.dispose();
@@ -309,53 +330,6 @@ export class App {
     }
 
     return `${sample} | ...`;
-  }
-
-  private ensureTileDataForCurrentTile(spatialState: SpatialState): void {
-    if (this.lastTileDataRequestKey === spatialState.tileKey) {
-      return;
-    }
-
-    this.lastTileDataRequestKey = spatialState.tileKey;
-    this.currentTileDataStatus = `loading ${spatialState.tileKey}`;
-    const requestTileKey = spatialState.tileKey;
-    const fetchParams = this.createTileFetchParams(spatialState.currentTile, requestTileKey);
-
-    void this.tileDataService
-      .getOrFetchTile(fetchParams)
-      .then((result) => {
-        if (this.lastTileDataRequestKey !== requestTileKey) {
-          return;
-        }
-
-        const topology = this.topologyRegistry.upsertTile(result.data);
-        this.currentTileDataStatus = `${result.source} ${requestTileKey}`;
-        this.currentTileRoadsCount = result.data.roads.length;
-        this.currentTileBuildingsCount = result.data.buildings.length;
-        this.currentTopologyNodeCount = topology.nodes.length;
-        this.currentTopologyEdgeCount = topology.edges.length;
-        this.currentTopologyIntersectionSplits = topology.stats.intersectionSplits;
-        this.currentTopologyDroppedSegments =
-          topology.stats.droppedDegenerateRoads + topology.stats.droppedZeroLengthSegments;
-        this.currentTopologyStitchedNodes = topology.stats.stitchedNodes;
-        const roadMesh = this.roadMesher.buildTileRoadMesh(topology);
-
-        if (this.lastRenderedRoadTileKey !== null && this.lastRenderedRoadTileKey !== requestTileKey) {
-          this.sceneComposer.removeRoadTileMesh(this.lastRenderedRoadTileKey);
-        }
-
-        this.sceneComposer.upsertRoadTileMesh(roadMesh);
-        this.lastRenderedRoadTileKey = requestTileKey;
-        this.currentRoadMeshStats = roadMesh.stats;
-      })
-      .catch((error: unknown) => {
-        if (this.lastTileDataRequestKey !== requestTileKey) {
-          return;
-        }
-
-        const message = error instanceof Error ? error.message : 'unknown error';
-        this.currentTileDataStatus = `error ${requestTileKey}: ${message}`;
-      });
   }
 
   private formatRoadWidthRange(stats: RoadMeshStats): string {
