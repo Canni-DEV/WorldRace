@@ -1,6 +1,8 @@
 export interface RuntimeConfig {
   readonly initialLatitude: number;
   readonly initialLongitude: number;
+  readonly projectionEastSign: 1 | -1;
+  readonly projectionNorthSign: 1 | -1;
   readonly tileSizeMeters: number;
   readonly activeRadiusTiles: number;
   readonly prefetchRadiusTiles: number;
@@ -16,8 +18,10 @@ export interface RuntimeConfig {
 }
 
 export const runtimeConfig: RuntimeConfig = Object.freeze({
-  initialLatitude: 40.7128,
-  initialLongitude: -74.006,
+  initialLatitude: -32.68501167668344,
+  initialLongitude: -61.52219240633147,
+  projectionEastSign: -1,
+  projectionNorthSign: 1,
   tileSizeMeters: 256,
   activeRadiusTiles: 2,
   prefetchRadiusTiles: 3,
