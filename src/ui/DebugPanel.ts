@@ -7,6 +7,9 @@ export interface DebugPanelMetrics {
   activeTileSample: string;
   prefetchTileSample: string;
   floatingOriginRecenters: number;
+  tileDataStatus: string;
+  tileRoadsCount: number;
+  tileBuildingsCount: number;
 }
 
 export class DebugPanel {
@@ -17,6 +20,8 @@ export class DebugPanel {
   private readonly activeSampleElement: HTMLParagraphElement;
   private readonly prefetchSampleElement: HTMLParagraphElement;
   private readonly recenterElement: HTMLParagraphElement;
+  private readonly tileDataStatusElement: HTMLParagraphElement;
+  private readonly tileDataCountsElement: HTMLParagraphElement;
   private readonly drawCallsElement: HTMLParagraphElement;
   private readonly trianglesElement: HTMLParagraphElement;
 
@@ -46,6 +51,12 @@ export class DebugPanel {
     this.recenterElement = document.createElement('p');
     this.recenterElement.className = 'overlay-row';
 
+    this.tileDataStatusElement = document.createElement('p');
+    this.tileDataStatusElement.className = 'overlay-row';
+
+    this.tileDataCountsElement = document.createElement('p');
+    this.tileDataCountsElement.className = 'overlay-row';
+
     this.drawCallsElement = document.createElement('p');
     this.drawCallsElement.className = 'overlay-row';
 
@@ -60,6 +71,8 @@ export class DebugPanel {
       this.activeSampleElement,
       this.prefetchSampleElement,
       this.recenterElement,
+      this.tileDataStatusElement,
+      this.tileDataCountsElement,
       this.drawCallsElement,
       this.trianglesElement,
     );
@@ -74,6 +87,9 @@ export class DebugPanel {
       activeTileSample: '-',
       prefetchTileSample: '-',
       floatingOriginRecenters: 0,
+      tileDataStatus: 'idle',
+      tileRoadsCount: 0,
+      tileBuildingsCount: 0,
     });
   }
 
@@ -84,6 +100,8 @@ export class DebugPanel {
     this.activeSampleElement.textContent = `Active sample: ${metrics.activeTileSample}`;
     this.prefetchSampleElement.textContent = `Prefetch sample: ${metrics.prefetchTileSample}`;
     this.recenterElement.textContent = `Floating recenter: ${metrics.floatingOriginRecenters}`;
+    this.tileDataStatusElement.textContent = `Tile data: ${metrics.tileDataStatus}`;
+    this.tileDataCountsElement.textContent = `Current payload: ${metrics.tileRoadsCount} roads | ${metrics.tileBuildingsCount} buildings`;
     this.drawCallsElement.textContent = `Draw calls: ${metrics.drawCalls}`;
     this.trianglesElement.textContent = `Triangles: ${metrics.triangles}`;
   }

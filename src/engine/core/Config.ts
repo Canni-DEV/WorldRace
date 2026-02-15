@@ -5,6 +5,8 @@ export interface RuntimeConfig {
   readonly activeRadiusTiles: number;
   readonly prefetchRadiusTiles: number;
   readonly floatingOriginThresholdMeters: number;
+  readonly cacheTtlMs: number;
+  readonly cacheStaleWhileRevalidate: boolean;
 }
 
 export const runtimeConfig: RuntimeConfig = Object.freeze({
@@ -14,4 +16,6 @@ export const runtimeConfig: RuntimeConfig = Object.freeze({
   activeRadiusTiles: 2,
   prefetchRadiusTiles: 3,
   floatingOriginThresholdMeters: 2000,
+  cacheTtlMs: 7 * 24 * 60 * 60 * 1000,
+  cacheStaleWhileRevalidate: true,
 });

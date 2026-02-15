@@ -56,25 +56,26 @@
 
 ### PR-03: Overpass data layer + cache v1
 **Goal:** robust fetch and local persistence.
+**Status:** implemented locally (network behavior depends on Overpass availability/CORS at runtime).
 
 **Checklist**
-- [ ] Implement Overpass client with:
-- [ ] Single-flight throttling (max 1 active request).
-- [ ] Retry with exponential backoff and jitter.
-- [ ] Endpoint fallback list with round-robin.
-- [ ] Query builder per tile bbox for `highway=*` and `building=*`.
-- [ ] Normalize Overpass response into compact `TileOSMData` schema.
-- [ ] Implement IndexedDB stores:
-- [ ] `raw_query_cache`
-- [ ] `normalized_tile_cache`
-- [ ] Add versioned cache key: `tileKey + schemaVersion + sourceVersion`.
-- [ ] Add TTL + LRU eviction policy.
-- [ ] Add `stale-while-revalidate` path (non-blocking refresh).
+- [x] Implement Overpass client with:
+- [x] Single-flight throttling (max 1 active request).
+- [x] Retry with exponential backoff and jitter.
+- [x] Endpoint fallback list with round-robin.
+- [x] Query builder per tile bbox for `highway=*` and `building=*`.
+- [x] Normalize Overpass response into compact `TileOSMData` schema.
+- [x] Implement IndexedDB stores:
+- [x] `raw_query_cache`
+- [x] `normalized_tile_cache`
+- [x] Add versioned cache key: `tileKey + schemaVersion + sourceVersion`.
+- [x] Add TTL + LRU eviction policy.
+- [x] Add `stale-while-revalidate` path (non-blocking refresh).
 
 **Acceptance**
-- [ ] First load fetches remote; reload uses cache hit.
-- [ ] Rate-limit safe behavior under rapid tile requests.
-- [ ] Cache metrics shown in HUD (hits/misses, age, store size).
+- [x] First load fetches remote; reload uses cache hit.
+- [x] Rate-limit safe behavior under rapid tile requests.
+- [x] Cache metrics shown in HUD (hits/misses, age, store size).
 
 ---
 

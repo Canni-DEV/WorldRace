@@ -1,5 +1,6 @@
 import { Clock } from '../engine/core/Clock';
 import { runtimeConfig } from '../engine/core/Config';
+import { TileDataService } from '../engine/data/TileDataService';
 import { Projection } from '../engine/geo/Projection';
 import { TileSystem } from '../engine/geo/TileSystem';
 import { SceneComposer } from '../engine/render/SceneComposer';
@@ -7,6 +8,7 @@ import { Anchor } from '../engine/sim/Anchor';
 import { CameraController } from '../engine/sim/CameraController';
 import { DebugPanel } from '../ui/DebugPanel';
 import { HUD } from '../ui/HUD';
+import type { CacheMetricsSnapshot, TileFetchParams } from '../engine/data/Types';
 import type { GeoBoundsMeters } from '../engine/geo/GeoBounds';
 import type { TileDebugGridData } from '../engine/render/SceneComposer';
 import type { GlobalOffsetMeters, TileCoordinate, TileRings } from '../engine/geo/TileSystem';
@@ -22,6 +24,19 @@ interface SpatialState {
   readonly tileDebugGridData: TileDebugGridData;
 }
 
+const EMPTY_CACHE_METRICS: CacheMetricsSnapshot = {
+  hits: 0,
+  misses: 0,
+  staleHits: 0,
+  hitRatio: 0,
+  lastEntryAgeMs: null,
+  normalizedStoreEntries: 0,
+  normalizedStoreBytes: 0,
+  rawStoreEntries: 0,
+  rawStoreBytes: 0,
+  lastSource: 'none',
+};
+
 export class App {
   private readonly clock = new Clock();
   private readonly sceneComposer: SceneComposer;
@@ -31,8 +46,14 @@ export class App {
   private readonly tileSystem: TileSystem;
   private readonly anchor: Anchor;
   private readonly cameraController: CameraController;
+  private readonly tileDataService: TileDataService;
   private globalOffsetMeters: GlobalOffsetMeters = { east: 0, north: 0 };
   private floatingOriginRecenters = 0;
+  private lastTileDataRequestKey: string | null = null;
+  private currentTileDataStatus = 'idle';
+  private currentTileRoadsCount = 0;
+  private currentTileBuildingsCount = 0;
+  private cacheMetrics: CacheMetricsSnapshot = EMPTY_CACHE_METRICS;
   private frameHandle = 0;
   private isRunning = false;
 
@@ -52,6 +73,16 @@ export class App {
       latitude: runtimeConfig.initialLatitude,
       longitude: runtimeConfig.initialLongitude,
     });
+    this.tileDataService = new TileDataService(
+      new Projection({
+        latitude: runtimeConfig.initialLatitude,
+        longitude: runtimeConfig.initialLongitude,
+      }),
+      {
+        staleWhileRevalidate: runtimeConfig.cacheStaleWhileRevalidate,
+        cacheTtlMs: runtimeConfig.cacheTtlMs,
+      },
+    );
     this.tileSystem = new TileSystem(runtimeConfig.tileSizeMeters);
     this.anchor = new Anchor(this.sceneComposer.getCamera().position);
     this.cameraController = new CameraController(
@@ -81,6 +112,8 @@ export class App {
       this.cameraController.update(deltaSeconds);
       this.applyFloatingOriginIfNeeded();
       const spatialState = this.computeSpatialState();
+      this.ensureTileDataForCurrentTile(spatialState);
+      this.cacheMetrics = this.tileDataService.getMetricsSnapshot();
       this.sceneComposer.updateTileDebugGrid(spatialState.tileDebugGridData);
       this.sceneComposer.render();
 
@@ -95,6 +128,15 @@ export class App {
         anchorNorthMeters: spatialState.anchorNorthMeters,
         anchorLatitude: spatialState.anchorLatitude,
         anchorLongitude: spatialState.anchorLongitude,
+        cacheHits: this.cacheMetrics.hits,
+        cacheMisses: this.cacheMetrics.misses,
+        cacheStaleHits: this.cacheMetrics.staleHits,
+        cacheHitRatioPercent: this.cacheMetrics.hitRatio * 100,
+        cacheLastAgeSeconds:
+          this.cacheMetrics.lastEntryAgeMs === null ? null : this.cacheMetrics.lastEntryAgeMs / 1000,
+        cacheStoreEntries: this.cacheMetrics.normalizedStoreEntries,
+        cacheStoreMegabytes: this.cacheMetrics.normalizedStoreBytes / (1024 * 1024),
+        dataSource: this.cacheMetrics.lastSource,
       });
 
       this.debugPanel.update({
@@ -106,6 +148,9 @@ export class App {
         activeTileSample: this.formatTileSample(spatialState.tileRings.activeTiles),
         prefetchTileSample: this.formatTileSample(spatialState.tileRings.prefetchTiles),
         floatingOriginRecenters: this.floatingOriginRecenters,
+        tileDataStatus: this.currentTileDataStatus,
+        tileRoadsCount: this.currentTileRoadsCount,
+        tileBuildingsCount: this.currentTileBuildingsCount,
       });
 
       this.frameHandle = window.requestAnimationFrame(animate);
@@ -207,5 +252,65 @@ export class App {
     }
 
     return `${sample} | ...`;
+  }
+
+  private ensureTileDataForCurrentTile(spatialState: SpatialState): void {
+    if (this.lastTileDataRequestKey === spatialState.tileKey) {
+      return;
+    }
+
+    this.lastTileDataRequestKey = spatialState.tileKey;
+    this.currentTileDataStatus = `loading ${spatialState.tileKey}`;
+    const requestTileKey = spatialState.tileKey;
+    const fetchParams = this.createTileFetchParams(spatialState.currentTile, requestTileKey);
+
+    void this.tileDataService
+      .getOrFetchTile(fetchParams)
+      .then((result) => {
+        if (this.lastTileDataRequestKey !== requestTileKey) {
+          return;
+        }
+
+        this.currentTileDataStatus = `${result.source} ${requestTileKey}`;
+        this.currentTileRoadsCount = result.data.roads.length;
+        this.currentTileBuildingsCount = result.data.buildings.length;
+      })
+      .catch((error: unknown) => {
+        if (this.lastTileDataRequestKey !== requestTileKey) {
+          return;
+        }
+
+        const message = error instanceof Error ? error.message : 'unknown error';
+        this.currentTileDataStatus = `error ${requestTileKey}: ${message}`;
+      });
+  }
+
+  private createTileFetchParams(currentTile: TileCoordinate, tileKey: string): TileFetchParams {
+    const globalBounds = this.tileSystem.getTileBoundsGlobalMeters(currentTile);
+    const southWest = this.globalMetersToLatLon(globalBounds.minEast, globalBounds.minNorth);
+    const northEast = this.globalMetersToLatLon(globalBounds.maxEast, globalBounds.maxNorth);
+
+    return {
+      tileKey,
+      bbox: {
+        south: Math.min(southWest.latitude, northEast.latitude),
+        west: Math.min(southWest.longitude, northEast.longitude),
+        north: Math.max(southWest.latitude, northEast.latitude),
+        east: Math.max(southWest.longitude, northEast.longitude),
+      },
+      tileOriginGlobalMeters: {
+        east: globalBounds.minEast,
+        north: globalBounds.minNorth,
+      },
+    };
+  }
+
+  private globalMetersToLatLon(east: number, north: number): { latitude: number; longitude: number } {
+    const localEast = east - this.globalOffsetMeters.east;
+    const localNorth = north - this.globalOffsetMeters.north;
+    return this.projection.localMetersToLatLon({
+      east: localEast,
+      north: localNorth,
+    });
   }
 }
