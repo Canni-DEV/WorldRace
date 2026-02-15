@@ -3,6 +3,7 @@ import type { TileFetchParams, TileFetchResult } from '../data/Types';
 import type { SceneComposer } from '../render/SceneComposer';
 import type { TileCoordinate, TileRings, TileSystem } from '../geo/TileSystem';
 import { BuildingMesher } from './BuildingMesher';
+import { DecorationMesher } from './DecorationMesher';
 import { RoadMeshBuildService } from './RoadMeshBuildService';
 import type { RoadMeshStats } from './RoadMeshTypes';
 import type { TopologyRegistry } from './TopologyRegistry';
@@ -41,6 +42,9 @@ interface LoadedTileEntry {
   readonly source: TileFetchResult['source'];
   readonly roadsCount: number;
   readonly buildingsCount: number;
+  readonly decorationPointsCount: number;
+  readonly decorationAreasCount: number;
+  readonly decorationInstanceCount: number;
   readonly topologyNodeCount: number;
   readonly topologyEdgeCount: number;
   readonly topologyIntersectionSplits: number;
@@ -65,6 +69,9 @@ export interface WorldStreamCurrentTileSnapshot {
   readonly source: TileFetchResult['source'];
   readonly roadsCount: number;
   readonly buildingsCount: number;
+  readonly decorationPointsCount: number;
+  readonly decorationAreasCount: number;
+  readonly decorationInstanceCount: number;
   readonly topologyNodeCount: number;
   readonly topologyEdgeCount: number;
   readonly topologyIntersectionSplits: number;
@@ -116,6 +123,7 @@ export class WorldStream {
   private readonly sceneComposer: SceneComposer;
   private readonly createTileFetchParams: (tile: TileCoordinate, tileKey: string) => TileFetchParams;
   private readonly buildingMesher = new BuildingMesher();
+  private readonly decorationMesher = new DecorationMesher();
   private readonly buildService: RoadMeshBuildService;
   private readonly maxConcurrentLoads: number;
   private readonly maxConcurrentFetches: number;
@@ -218,6 +226,9 @@ export class WorldStream {
               source: currentTile.source,
               roadsCount: currentTile.roadsCount,
               buildingsCount: currentTile.buildingsCount,
+              decorationPointsCount: currentTile.decorationPointsCount,
+              decorationAreasCount: currentTile.decorationAreasCount,
+              decorationInstanceCount: currentTile.decorationInstanceCount,
               topologyNodeCount: currentTile.topologyNodeCount,
               topologyEdgeCount: currentTile.topologyEdgeCount,
               topologyIntersectionSplits: currentTile.topologyIntersectionSplits,
@@ -347,6 +358,7 @@ export class WorldStream {
 
     this.sceneComposer.removeRoadTileMesh(tileKey);
     this.sceneComposer.removeBuildingTileMesh(tileKey);
+    this.sceneComposer.removeDecorationTileMesh(tileKey);
     this.topologyRegistry.removeTile(tileKey);
     this.loadedByKey.delete(tileKey);
     this.approxMeshBytes = Math.max(0, this.approxMeshBytes - loaded.approxMeshBytes);
@@ -485,8 +497,9 @@ export class WorldStream {
       const roadBuildResult = await this.buildService.build(topology);
       const buildingBuildStartedAt = performance.now();
       const buildingMesh = this.buildingMesher.buildTileBuildingMesh(fetched.data);
-      const buildingBuildMs = performance.now() - buildingBuildStartedAt;
-      this.lastBuildMs = roadBuildResult.buildTimeMs + buildingBuildMs;
+      const decorationMesh = this.decorationMesher.buildTileDecorationMesh(fetched.data);
+      const buildPostRoadMs = performance.now() - buildingBuildStartedAt;
+      this.lastBuildMs = roadBuildResult.buildTimeMs + buildPostRoadMs;
 
       if (this.disposed || !this.desiredByKey.has(tileKey)) {
         this.topologyRegistry.removeTile(tileKey);
@@ -496,11 +509,17 @@ export class WorldStream {
 
       this.sceneComposer.upsertRoadTileMesh(roadBuildResult.payload);
       this.sceneComposer.upsertBuildingTileMesh(buildingMesh);
+      this.sceneComposer.upsertDecorationTileMesh(decorationMesh);
       const previous = this.loadedByKey.get(tileKey);
       if (previous !== undefined) {
         this.approxMeshBytes = Math.max(0, this.approxMeshBytes - previous.approxMeshBytes);
       }
 
+      const decorationBytes = decorationMesh.instancesByKind.reduce(
+        (total, instanceGroup) => total + instanceGroup.transforms.byteLength,
+        0,
+      );
+      const decorationInstanceCount = decorationMesh.stats.totalInstances;
       const approxMeshBytes =
         roadBuildResult.payload.surfacePositions.byteLength +
         roadBuildResult.payload.surfaceUvs.byteLength +
@@ -511,7 +530,8 @@ export class WorldStream {
         buildingMesh.lod0Positions.byteLength +
         buildingMesh.lod0Indices.byteLength +
         buildingMesh.lod1Positions.byteLength +
-        buildingMesh.lod1Indices.byteLength;
+        buildingMesh.lod1Indices.byteLength +
+        decorationBytes;
 
       this.approxMeshBytes += approxMeshBytes;
       this.loadedByKey.set(tileKey, {
@@ -520,6 +540,9 @@ export class WorldStream {
         source: fetched.source,
         roadsCount: fetched.data.roads.length,
         buildingsCount: fetched.data.buildings.length,
+        decorationPointsCount: fetched.data.decorationPoints.length,
+        decorationAreasCount: fetched.data.decorationAreas.length,
+        decorationInstanceCount,
         topologyNodeCount: topology.nodes.length,
         topologyEdgeCount: topology.edges.length,
         topologyIntersectionSplits: topology.stats.intersectionSplits,

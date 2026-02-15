@@ -71,6 +71,8 @@ export class App {
   private stableCurrentTile: TileCoordinate | null = null;
   private floatingOriginRecenters = 0;
   private roadDebugOverlayEnabled = false;
+  private decorationEnabled = true;
+  private decorationDensityBudget = 1;
   private cacheMetrics: CacheMetricsSnapshot = EMPTY_CACHE_METRICS;
   private frameHandle = 0;
   private isRunning = false;
@@ -80,12 +82,16 @@ export class App {
   };
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
-    if (event.code !== 'KeyB') {
+    if (event.code === 'KeyB') {
+      this.roadDebugOverlayEnabled = !this.roadDebugOverlayEnabled;
+      this.sceneComposer.setRoadDebugOverlayEnabled(this.roadDebugOverlayEnabled);
       return;
     }
 
-    this.roadDebugOverlayEnabled = !this.roadDebugOverlayEnabled;
-    this.sceneComposer.setRoadDebugOverlayEnabled(this.roadDebugOverlayEnabled);
+    if (event.code === 'KeyN') {
+      this.decorationEnabled = !this.decorationEnabled;
+      this.sceneComposer.setDecorationEnabled(this.decorationEnabled);
+    }
   };
 
   public constructor(rootElement: HTMLElement) {
@@ -95,7 +101,16 @@ export class App {
 
     this.sceneComposer = new SceneComposer(viewport);
     this.hud = new HUD(rootElement);
-    this.debugPanel = new DebugPanel(rootElement);
+    this.debugPanel = new DebugPanel(rootElement, {
+      onDecorationEnabledChange: (enabled) => {
+        this.decorationEnabled = enabled;
+        this.sceneComposer.setDecorationEnabled(enabled);
+      },
+      onDecorationDensityBudgetChange: (densityBudget) => {
+        this.decorationDensityBudget = densityBudget;
+        this.sceneComposer.setDecorationDensityBudget(densityBudget);
+      },
+    });
     this.projection = new Projection({
       latitude: runtimeConfig.initialLatitude,
       longitude: runtimeConfig.initialLongitude,
@@ -139,6 +154,8 @@ export class App {
     this.onResize();
     this.sceneComposer.setWorldOffset(this.globalOffsetMeters.east, this.globalOffsetMeters.north);
     this.sceneComposer.setRoadDebugOverlayEnabled(this.roadDebugOverlayEnabled);
+    this.sceneComposer.setDecorationEnabled(this.decorationEnabled);
+    this.sceneComposer.setDecorationDensityBudget(this.decorationDensityBudget);
     window.addEventListener('resize', this.onResize);
     window.addEventListener('keydown', this.onKeyDown);
   }
@@ -174,7 +191,7 @@ export class App {
       this.hud.update({
         fps,
         frameMs: deltaSeconds * 1000,
-        status: 'Move: WASD/Arrows, Up/Down: E/Q, RMB look, B toggles road debug',
+        status: 'Move: WASD/Arrows, Up/Down: E/Q, RMB look, B road debug, N decoration',
         anchorEastMeters: spatialState.anchorEastMeters,
         anchorNorthMeters: spatialState.anchorNorthMeters,
         anchorLatitude: spatialState.anchorLatitude,
@@ -202,6 +219,9 @@ export class App {
         tileDataStatus: streamSnapshot.status,
         tileRoadsCount: streamSnapshot.currentTile?.roadsCount ?? 0,
         tileBuildingsCount: streamSnapshot.currentTile?.buildingsCount ?? 0,
+        tileDecorationPointsCount: streamSnapshot.currentTile?.decorationPointsCount ?? 0,
+        tileDecorationAreasCount: streamSnapshot.currentTile?.decorationAreasCount ?? 0,
+        tileDecorationInstancesCount: streamSnapshot.currentTile?.decorationInstanceCount ?? 0,
         topologyNodeCount: streamSnapshot.currentTile?.topologyNodeCount ?? 0,
         topologyEdgeCount: streamSnapshot.currentTile?.topologyEdgeCount ?? 0,
         topologyIntersectionSplits: streamSnapshot.currentTile?.topologyIntersectionSplits ?? 0,
@@ -218,6 +238,10 @@ export class App {
         ),
         roadDebugOverlayEnabled: this.roadDebugOverlayEnabled,
         renderedRoadTiles: this.sceneComposer.getRoadTileCount(),
+        renderedDecorationTiles: this.sceneComposer.getDecorationTileCount(),
+        renderedDecorationInstances: this.sceneComposer.getVisibleDecorationInstanceCount(),
+        decorationEnabled: this.decorationEnabled,
+        decorationDensityBudget: this.decorationDensityBudget,
         streamDesiredTiles: streamSnapshot.desiredTiles,
         streamLoadedTiles: streamSnapshot.loadedTiles,
         streamPendingTiles: streamSnapshot.pendingTiles,

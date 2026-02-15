@@ -10,6 +10,9 @@ export interface DebugPanelMetrics {
   tileDataStatus: string;
   tileRoadsCount: number;
   tileBuildingsCount: number;
+  tileDecorationPointsCount: number;
+  tileDecorationAreasCount: number;
+  tileDecorationInstancesCount: number;
   topologyNodeCount: number;
   topologyEdgeCount: number;
   topologyIntersectionSplits: number;
@@ -22,6 +25,10 @@ export interface DebugPanelMetrics {
   roadJunctionSummary: string;
   roadDebugOverlayEnabled: boolean;
   renderedRoadTiles: number;
+  renderedDecorationTiles: number;
+  renderedDecorationInstances: number;
+  decorationEnabled: boolean;
+  decorationDensityBudget: number;
   streamDesiredTiles: number;
   streamLoadedTiles: number;
   streamPendingTiles: number;
@@ -41,6 +48,11 @@ export interface DebugPanelMetrics {
   gpuTextures: number;
 }
 
+export interface DebugPanelControls {
+  readonly onDecorationEnabledChange?: (enabled: boolean) => void;
+  readonly onDecorationDensityBudgetChange?: (densityBudget: number) => void;
+}
+
 export class DebugPanel {
   private readonly rootElement: HTMLDivElement;
   private readonly tileElement: HTMLParagraphElement;
@@ -51,6 +63,12 @@ export class DebugPanel {
   private readonly recenterElement: HTMLParagraphElement;
   private readonly tileDataStatusElement: HTMLParagraphElement;
   private readonly tileDataCountsElement: HTMLParagraphElement;
+  private readonly decorationDataElement: HTMLParagraphElement;
+  private readonly decorationRenderElement: HTMLParagraphElement;
+  private readonly decorationControlsElement: HTMLDivElement;
+  private readonly decorationToggleInput: HTMLInputElement;
+  private readonly decorationBudgetInput: HTMLInputElement;
+  private readonly decorationBudgetValueElement: HTMLSpanElement;
   private readonly topologyCountsElement: HTMLParagraphElement;
   private readonly topologyStatsElement: HTMLParagraphElement;
   private readonly roadMeshCountsElement: HTMLParagraphElement;
@@ -65,7 +83,7 @@ export class DebugPanel {
   private readonly drawCallsElement: HTMLParagraphElement;
   private readonly trianglesElement: HTMLParagraphElement;
 
-  public constructor(parent: HTMLElement) {
+  public constructor(parent: HTMLElement, controls: DebugPanelControls = {}) {
     this.rootElement = document.createElement('div');
     this.rootElement.className = 'overlay-panel debug-panel';
 
@@ -96,6 +114,45 @@ export class DebugPanel {
 
     this.tileDataCountsElement = document.createElement('p');
     this.tileDataCountsElement.className = 'overlay-row';
+
+    this.decorationDataElement = document.createElement('p');
+    this.decorationDataElement.className = 'overlay-row';
+
+    this.decorationRenderElement = document.createElement('p');
+    this.decorationRenderElement.className = 'overlay-row';
+
+    this.decorationControlsElement = document.createElement('div');
+    this.decorationControlsElement.className = 'overlay-control-group';
+
+    const decorationToggleLabel = document.createElement('label');
+    decorationToggleLabel.className = 'overlay-control-row';
+    this.decorationToggleInput = document.createElement('input');
+    this.decorationToggleInput.type = 'checkbox';
+    this.decorationToggleInput.checked = true;
+    const decorationToggleText = document.createElement('span');
+    decorationToggleText.textContent = 'Decoration enabled';
+    decorationToggleLabel.append(this.decorationToggleInput, decorationToggleText);
+
+    const decorationBudgetRow = document.createElement('label');
+    decorationBudgetRow.className = 'overlay-control-row';
+    const decorationBudgetText = document.createElement('span');
+    decorationBudgetText.textContent = 'Density budget';
+    this.decorationBudgetInput = document.createElement('input');
+    this.decorationBudgetInput.type = 'range';
+    this.decorationBudgetInput.min = '0';
+    this.decorationBudgetInput.max = '100';
+    this.decorationBudgetInput.step = '5';
+    this.decorationBudgetInput.value = '100';
+    this.decorationBudgetValueElement = document.createElement('span');
+    this.decorationBudgetValueElement.className = 'overlay-control-value';
+    this.decorationBudgetValueElement.textContent = '100%';
+    decorationBudgetRow.append(
+      decorationBudgetText,
+      this.decorationBudgetInput,
+      this.decorationBudgetValueElement,
+    );
+
+    this.decorationControlsElement.append(decorationToggleLabel, decorationBudgetRow);
 
     this.topologyCountsElement = document.createElement('p');
     this.topologyCountsElement.className = 'overlay-row';
@@ -146,6 +203,9 @@ export class DebugPanel {
       this.recenterElement,
       this.tileDataStatusElement,
       this.tileDataCountsElement,
+      this.decorationDataElement,
+      this.decorationRenderElement,
+      this.decorationControlsElement,
       this.topologyCountsElement,
       this.topologyStatsElement,
       this.roadMeshCountsElement,
@@ -162,6 +222,16 @@ export class DebugPanel {
     );
     parent.appendChild(this.rootElement);
 
+    this.decorationToggleInput.addEventListener('change', () => {
+      controls.onDecorationEnabledChange?.(this.decorationToggleInput.checked);
+    });
+    this.decorationBudgetInput.addEventListener('input', () => {
+      const percent = Number.parseInt(this.decorationBudgetInput.value, 10);
+      const normalizedPercent = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 100;
+      this.decorationBudgetValueElement.textContent = `${normalizedPercent}%`;
+      controls.onDecorationDensityBudgetChange?.(normalizedPercent / 100);
+    });
+
     this.update({
       drawCalls: 0,
       triangles: 0,
@@ -174,6 +244,9 @@ export class DebugPanel {
       tileDataStatus: 'idle',
       tileRoadsCount: 0,
       tileBuildingsCount: 0,
+      tileDecorationPointsCount: 0,
+      tileDecorationAreasCount: 0,
+      tileDecorationInstancesCount: 0,
       topologyNodeCount: 0,
       topologyEdgeCount: 0,
       topologyIntersectionSplits: 0,
@@ -186,6 +259,10 @@ export class DebugPanel {
       roadJunctionSummary: '-',
       roadDebugOverlayEnabled: false,
       renderedRoadTiles: 0,
+      renderedDecorationTiles: 0,
+      renderedDecorationInstances: 0,
+      decorationEnabled: true,
+      decorationDensityBudget: 1,
       streamDesiredTiles: 0,
       streamLoadedTiles: 0,
       streamPendingTiles: 0,
@@ -215,12 +292,18 @@ export class DebugPanel {
     this.recenterElement.textContent = `Floating recenter: ${metrics.floatingOriginRecenters}`;
     this.tileDataStatusElement.textContent = `Tile data: ${metrics.tileDataStatus}`;
     this.tileDataCountsElement.textContent = `Current payload: ${metrics.tileRoadsCount} roads | ${metrics.tileBuildingsCount} buildings`;
+    this.decorationDataElement.textContent = `Decoration payload: ${metrics.tileDecorationPointsCount} points | ${metrics.tileDecorationAreasCount} areas | ${metrics.tileDecorationInstancesCount} instances`;
+    this.decorationRenderElement.textContent = `Decoration render: ${metrics.renderedDecorationTiles} tiles | ${metrics.renderedDecorationInstances} visible instances`;
+    this.decorationToggleInput.checked = metrics.decorationEnabled;
+    const densityPercent = Math.max(0, Math.min(100, Math.round(metrics.decorationDensityBudget * 100)));
+    this.decorationBudgetInput.value = densityPercent.toString();
+    this.decorationBudgetValueElement.textContent = `${densityPercent}%`;
     this.topologyCountsElement.textContent = `Topology: ${metrics.topologyNodeCount} nodes | ${metrics.topologyEdgeCount} edges`;
     this.topologyStatsElement.textContent = `Topology stats: splits ${metrics.topologyIntersectionSplits} | dropped ${metrics.topologyDroppedSegments} | stitched ${metrics.topologyStitchedNodes}`;
     this.roadMeshCountsElement.textContent = `Road mesh: ${metrics.roadMeshEdgeCount} edges | ${metrics.roadMeshTriangleCount} tris | collision ${metrics.roadCollisionTriangleCount} tris`;
     this.roadMeshStatsElement.textContent = `Width range: ${metrics.roadMeshWidthRange} m`;
     this.roadJunctionElement.textContent = `Junctions: ${metrics.roadJunctionSummary}`;
-    this.roadDebugElement.textContent = `Road debug: ${metrics.roadDebugOverlayEnabled ? 'on' : 'off'} | rendered tiles ${metrics.renderedRoadTiles}`;
+    this.roadDebugElement.textContent = `Road debug: ${metrics.roadDebugOverlayEnabled ? 'on' : 'off'} | rendered road tiles ${metrics.renderedRoadTiles}`;
     this.streamQueueElement.textContent = `Stream queue: desired ${metrics.streamDesiredTiles} | loaded ${metrics.streamLoadedTiles} | pending ${metrics.streamPendingTiles} | fetch ${metrics.streamInflightFetches} | build ${metrics.streamInflightBuilds}`;
     this.streamTimingElement.textContent = `Stream timings: fetch ${metrics.streamLastFetchMs.toFixed(1)} ms | build ${metrics.streamLastBuildMs.toFixed(1)} ms | mode ${metrics.streamBuildMode}`;
     this.streamReliabilityElement.textContent = `Stream reliability: canceled_obsolete ${metrics.streamCanceledObsoleteLoads} | deferred_prefetch ${metrics.streamDeferredPrefetchLoads} | skipped_focus ${metrics.streamSkippedPrefetchBecauseForeground} | disposed ${metrics.streamDisposedTiles} | errors f/b ${metrics.streamFetchErrors}/${metrics.streamBuildErrors}`;
