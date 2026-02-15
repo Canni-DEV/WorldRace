@@ -2,6 +2,7 @@ import type { TileDataService } from '../data/TileDataService';
 import type { TileFetchParams, TileFetchResult } from '../data/Types';
 import type { SceneComposer } from '../render/SceneComposer';
 import type { TileCoordinate, TileRings, TileSystem } from '../geo/TileSystem';
+import { BuildingMesher } from './BuildingMesher';
 import { RoadMeshBuildService } from './RoadMeshBuildService';
 import type { RoadMeshStats } from './RoadMeshTypes';
 import type { TopologyRegistry } from './TopologyRegistry';
@@ -114,6 +115,7 @@ export class WorldStream {
   private readonly topologyRegistry: TopologyRegistry;
   private readonly sceneComposer: SceneComposer;
   private readonly createTileFetchParams: (tile: TileCoordinate, tileKey: string) => TileFetchParams;
+  private readonly buildingMesher = new BuildingMesher();
   private readonly buildService: RoadMeshBuildService;
   private readonly maxConcurrentLoads: number;
   private readonly maxConcurrentFetches: number;
@@ -344,6 +346,7 @@ export class WorldStream {
     }
 
     this.sceneComposer.removeRoadTileMesh(tileKey);
+    this.sceneComposer.removeBuildingTileMesh(tileKey);
     this.topologyRegistry.removeTile(tileKey);
     this.loadedByKey.delete(tileKey);
     this.approxMeshBytes = Math.max(0, this.approxMeshBytes - loaded.approxMeshBytes);
@@ -479,8 +482,11 @@ export class WorldStream {
 
       const topology = this.topologyRegistry.upsertTile(fetched.data);
       topologyInserted = true;
-      const buildResult = await this.buildService.build(topology);
-      this.lastBuildMs = buildResult.buildTimeMs;
+      const roadBuildResult = await this.buildService.build(topology);
+      const buildingBuildStartedAt = performance.now();
+      const buildingMesh = this.buildingMesher.buildTileBuildingMesh(fetched.data);
+      const buildingBuildMs = performance.now() - buildingBuildStartedAt;
+      this.lastBuildMs = roadBuildResult.buildTimeMs + buildingBuildMs;
 
       if (this.disposed || !this.desiredByKey.has(tileKey)) {
         this.topologyRegistry.removeTile(tileKey);
@@ -488,19 +494,24 @@ export class WorldStream {
         return;
       }
 
-      this.sceneComposer.upsertRoadTileMesh(buildResult.payload);
+      this.sceneComposer.upsertRoadTileMesh(roadBuildResult.payload);
+      this.sceneComposer.upsertBuildingTileMesh(buildingMesh);
       const previous = this.loadedByKey.get(tileKey);
       if (previous !== undefined) {
         this.approxMeshBytes = Math.max(0, this.approxMeshBytes - previous.approxMeshBytes);
       }
 
       const approxMeshBytes =
-        buildResult.payload.surfacePositions.byteLength +
-        buildResult.payload.surfaceUvs.byteLength +
-        buildResult.payload.surfaceIndices.byteLength +
-        buildResult.payload.collisionPositions.byteLength +
-        buildResult.payload.collisionIndices.byteLength +
-        buildResult.payload.debugLinePositions.byteLength;
+        roadBuildResult.payload.surfacePositions.byteLength +
+        roadBuildResult.payload.surfaceUvs.byteLength +
+        roadBuildResult.payload.surfaceIndices.byteLength +
+        roadBuildResult.payload.collisionPositions.byteLength +
+        roadBuildResult.payload.collisionIndices.byteLength +
+        roadBuildResult.payload.debugLinePositions.byteLength +
+        buildingMesh.lod0Positions.byteLength +
+        buildingMesh.lod0Indices.byteLength +
+        buildingMesh.lod1Positions.byteLength +
+        buildingMesh.lod1Indices.byteLength;
 
       this.approxMeshBytes += approxMeshBytes;
       this.loadedByKey.set(tileKey, {
@@ -515,9 +526,9 @@ export class WorldStream {
         topologyDroppedSegments:
           topology.stats.droppedDegenerateRoads + topology.stats.droppedZeroLengthSegments,
         topologyStitchedNodes: topology.stats.stitchedNodes,
-        roadMeshStats: buildResult.payload.stats,
+        roadMeshStats: roadBuildResult.payload.stats,
         fetchTimeMs: this.lastFetchMs,
-        buildTimeMs: buildResult.buildTimeMs,
+        buildTimeMs: this.lastBuildMs,
         approxMeshBytes,
       });
 
