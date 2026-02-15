@@ -15,6 +15,12 @@ export interface DebugPanelMetrics {
   topologyIntersectionSplits: number;
   topologyDroppedSegments: number;
   topologyStitchedNodes: number;
+  roadMeshEdgeCount: number;
+  roadMeshTriangleCount: number;
+  roadCollisionTriangleCount: number;
+  roadMeshWidthRange: string;
+  roadDebugOverlayEnabled: boolean;
+  renderedRoadTiles: number;
 }
 
 export class DebugPanel {
@@ -29,6 +35,9 @@ export class DebugPanel {
   private readonly tileDataCountsElement: HTMLParagraphElement;
   private readonly topologyCountsElement: HTMLParagraphElement;
   private readonly topologyStatsElement: HTMLParagraphElement;
+  private readonly roadMeshCountsElement: HTMLParagraphElement;
+  private readonly roadMeshStatsElement: HTMLParagraphElement;
+  private readonly roadDebugElement: HTMLParagraphElement;
   private readonly drawCallsElement: HTMLParagraphElement;
   private readonly trianglesElement: HTMLParagraphElement;
 
@@ -70,6 +79,15 @@ export class DebugPanel {
     this.topologyStatsElement = document.createElement('p');
     this.topologyStatsElement.className = 'overlay-row';
 
+    this.roadMeshCountsElement = document.createElement('p');
+    this.roadMeshCountsElement.className = 'overlay-row';
+
+    this.roadMeshStatsElement = document.createElement('p');
+    this.roadMeshStatsElement.className = 'overlay-row';
+
+    this.roadDebugElement = document.createElement('p');
+    this.roadDebugElement.className = 'overlay-row';
+
     this.drawCallsElement = document.createElement('p');
     this.drawCallsElement.className = 'overlay-row';
 
@@ -88,6 +106,9 @@ export class DebugPanel {
       this.tileDataCountsElement,
       this.topologyCountsElement,
       this.topologyStatsElement,
+      this.roadMeshCountsElement,
+      this.roadMeshStatsElement,
+      this.roadDebugElement,
       this.drawCallsElement,
       this.trianglesElement,
     );
@@ -110,6 +131,12 @@ export class DebugPanel {
       topologyIntersectionSplits: 0,
       topologyDroppedSegments: 0,
       topologyStitchedNodes: 0,
+      roadMeshEdgeCount: 0,
+      roadMeshTriangleCount: 0,
+      roadCollisionTriangleCount: 0,
+      roadMeshWidthRange: '0-0',
+      roadDebugOverlayEnabled: false,
+      renderedRoadTiles: 0,
     });
   }
 
@@ -124,6 +151,9 @@ export class DebugPanel {
     this.tileDataCountsElement.textContent = `Current payload: ${metrics.tileRoadsCount} roads | ${metrics.tileBuildingsCount} buildings`;
     this.topologyCountsElement.textContent = `Topology: ${metrics.topologyNodeCount} nodes | ${metrics.topologyEdgeCount} edges`;
     this.topologyStatsElement.textContent = `Topology stats: splits ${metrics.topologyIntersectionSplits} | dropped ${metrics.topologyDroppedSegments} | stitched ${metrics.topologyStitchedNodes}`;
+    this.roadMeshCountsElement.textContent = `Road mesh: ${metrics.roadMeshEdgeCount} edges | ${metrics.roadMeshTriangleCount} tris | collision ${metrics.roadCollisionTriangleCount} tris`;
+    this.roadMeshStatsElement.textContent = `Width range: ${metrics.roadMeshWidthRange} m`;
+    this.roadDebugElement.textContent = `Road debug: ${metrics.roadDebugOverlayEnabled ? 'on' : 'off'} | rendered tiles ${metrics.renderedRoadTiles}`;
     this.drawCallsElement.textContent = `Draw calls: ${metrics.drawCalls}`;
     this.trianglesElement.textContent = `Triangles: ${metrics.triangles}`;
   }

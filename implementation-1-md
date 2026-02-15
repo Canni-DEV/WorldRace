@@ -101,22 +101,23 @@
 
 ### PR-05: Road mesher (core) + basic collisions
 **Goal:** first playable road surfaces with accurate width handling.
+**Status:** implemented locally.
 
 **Checklist**
-- [ ] Implement lane/width resolver priority:
-- [ ] `width` tag
-- [ ] else `lanes * defaultLaneWidth`
-- [ ] else highway-class fallback
-- [ ] Build left/right offsets per segment from centerline.
-- [ ] Triangulate ribbon mesh with robust segment joins.
-- [ ] Implement UV mapping by accumulated length.
-- [ ] Add asphalt material and wire/debug view toggles.
-- [ ] Build simplified collision mesh from road surface.
+- [x] Implement lane/width resolver priority:
+- [x] `width` tag
+- [x] else `lanes * defaultLaneWidth`
+- [x] else highway-class fallback
+- [x] Build left/right offsets per segment from centerline.
+- [x] Triangulate ribbon mesh with robust segment joins.
+- [x] Implement UV mapping by accumulated length.
+- [x] Add asphalt material and wire/debug view toggles.
+- [x] Build simplified collision mesh from road surface.
 
 **Acceptance**
-- [ ] Roads visible and contiguous inside tile.
-- [ ] Width heuristics match expected classes and tags.
-- [ ] Collision surface aligns with render mesh.
+- [x] Roads visible and contiguous inside tile.
+- [x] Width heuristics match expected classes and tags.
+- [x] Collision surface aligns with render mesh.
 
 ---
 

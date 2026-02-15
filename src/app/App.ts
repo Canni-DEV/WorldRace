@@ -6,6 +6,7 @@ import { TileSystem } from '../engine/geo/TileSystem';
 import { SceneComposer } from '../engine/render/SceneComposer';
 import { Anchor } from '../engine/sim/Anchor';
 import { CameraController } from '../engine/sim/CameraController';
+import { RoadMesher } from '../engine/world/RoadMesher';
 import { TopologyRegistry } from '../engine/world/TopologyRegistry';
 import { DebugPanel } from '../ui/DebugPanel';
 import { HUD } from '../ui/HUD';
@@ -13,6 +14,7 @@ import type { CacheMetricsSnapshot, TileFetchParams } from '../engine/data/Types
 import type { GeoBoundsMeters } from '../engine/geo/GeoBounds';
 import type { TileDebugGridData } from '../engine/render/SceneComposer';
 import type { GlobalOffsetMeters, TileCoordinate, TileRings } from '../engine/geo/TileSystem';
+import type { RoadMeshStats } from '../engine/world/RoadMeshTypes';
 
 interface SpatialState {
   readonly tileKey: string;
@@ -38,6 +40,15 @@ const EMPTY_CACHE_METRICS: CacheMetricsSnapshot = {
   lastSource: 'none',
 };
 
+const EMPTY_ROAD_MESH_STATS: RoadMeshStats = {
+  edgeCountMeshed: 0,
+  droppedEdges: 0,
+  triangleCount: 0,
+  collisionTriangleCount: 0,
+  minResolvedWidthMeters: 0,
+  maxResolvedWidthMeters: 0,
+};
+
 export class App {
   private readonly clock = new Clock();
   private readonly sceneComposer: SceneComposer;
@@ -48,10 +59,12 @@ export class App {
   private readonly anchor: Anchor;
   private readonly cameraController: CameraController;
   private readonly tileDataService: TileDataService;
+  private readonly roadMesher: RoadMesher;
   private readonly topologyRegistry: TopologyRegistry;
   private globalOffsetMeters: GlobalOffsetMeters = { east: 0, north: 0 };
   private floatingOriginRecenters = 0;
   private lastTileDataRequestKey: string | null = null;
+  private lastRenderedRoadTileKey: string | null = null;
   private currentTileDataStatus = 'idle';
   private currentTileRoadsCount = 0;
   private currentTileBuildingsCount = 0;
@@ -60,12 +73,23 @@ export class App {
   private currentTopologyIntersectionSplits = 0;
   private currentTopologyDroppedSegments = 0;
   private currentTopologyStitchedNodes = 0;
+  private currentRoadMeshStats: RoadMeshStats = EMPTY_ROAD_MESH_STATS;
+  private roadDebugOverlayEnabled = false;
   private cacheMetrics: CacheMetricsSnapshot = EMPTY_CACHE_METRICS;
   private frameHandle = 0;
   private isRunning = false;
 
   private readonly onResize = (): void => {
     this.sceneComposer.resize(window.innerWidth, window.innerHeight);
+  };
+
+  private readonly onKeyDown = (event: KeyboardEvent): void => {
+    if (event.code !== 'Backquote') {
+      return;
+    }
+
+    this.roadDebugOverlayEnabled = !this.roadDebugOverlayEnabled;
+    this.sceneComposer.setRoadDebugOverlayEnabled(this.roadDebugOverlayEnabled);
   };
 
   public constructor(rootElement: HTMLElement) {
@@ -90,6 +114,7 @@ export class App {
         cacheTtlMs: runtimeConfig.cacheTtlMs,
       },
     );
+    this.roadMesher = new RoadMesher();
     this.topologyRegistry = new TopologyRegistry();
     this.tileSystem = new TileSystem(runtimeConfig.tileSizeMeters);
     this.anchor = new Anchor(this.sceneComposer.getCamera().position);
@@ -100,7 +125,10 @@ export class App {
     );
 
     this.onResize();
+    this.sceneComposer.setWorldOffset(this.globalOffsetMeters.east, this.globalOffsetMeters.north);
+    this.sceneComposer.setRoadDebugOverlayEnabled(this.roadDebugOverlayEnabled);
     window.addEventListener('resize', this.onResize);
+    window.addEventListener('keydown', this.onKeyDown);
   }
 
   public start(): void {
@@ -122,6 +150,7 @@ export class App {
       const spatialState = this.computeSpatialState();
       this.ensureTileDataForCurrentTile(spatialState);
       this.cacheMetrics = this.tileDataService.getMetricsSnapshot();
+      this.sceneComposer.setWorldOffset(this.globalOffsetMeters.east, this.globalOffsetMeters.north);
       this.sceneComposer.updateTileDebugGrid(spatialState.tileDebugGridData);
       this.sceneComposer.render();
 
@@ -131,7 +160,7 @@ export class App {
       this.hud.update({
         fps,
         frameMs: deltaSeconds * 1000,
-        status: 'Move: WASD/Arrows, Up/Down: E/Q, Hold right-click to look',
+        status: 'Move: WASD/Arrows, Up/Down: E/Q, RMB look, ` toggles road debug',
         anchorEastMeters: spatialState.anchorEastMeters,
         anchorNorthMeters: spatialState.anchorNorthMeters,
         anchorLatitude: spatialState.anchorLatitude,
@@ -164,6 +193,12 @@ export class App {
         topologyIntersectionSplits: this.currentTopologyIntersectionSplits,
         topologyDroppedSegments: this.currentTopologyDroppedSegments,
         topologyStitchedNodes: this.currentTopologyStitchedNodes,
+        roadMeshEdgeCount: this.currentRoadMeshStats.edgeCountMeshed,
+        roadMeshTriangleCount: this.currentRoadMeshStats.triangleCount,
+        roadCollisionTriangleCount: this.currentRoadMeshStats.collisionTriangleCount,
+        roadMeshWidthRange: this.formatRoadWidthRange(this.currentRoadMeshStats),
+        roadDebugOverlayEnabled: this.roadDebugOverlayEnabled,
+        renderedRoadTiles: this.sceneComposer.getRoadTileCount(),
       });
 
       this.frameHandle = window.requestAnimationFrame(animate);
@@ -184,6 +219,7 @@ export class App {
   public destroy(): void {
     this.stop();
     window.removeEventListener('resize', this.onResize);
+    window.removeEventListener('keydown', this.onKeyDown);
     this.cameraController.dispose();
     this.hud.dispose();
     this.debugPanel.dispose();
@@ -294,6 +330,15 @@ export class App {
         this.currentTopologyDroppedSegments =
           topology.stats.droppedDegenerateRoads + topology.stats.droppedZeroLengthSegments;
         this.currentTopologyStitchedNodes = topology.stats.stitchedNodes;
+        const roadMesh = this.roadMesher.buildTileRoadMesh(topology);
+
+        if (this.lastRenderedRoadTileKey !== null && this.lastRenderedRoadTileKey !== requestTileKey) {
+          this.sceneComposer.removeRoadTileMesh(this.lastRenderedRoadTileKey);
+        }
+
+        this.sceneComposer.upsertRoadTileMesh(roadMesh);
+        this.lastRenderedRoadTileKey = requestTileKey;
+        this.currentRoadMeshStats = roadMesh.stats;
       })
       .catch((error: unknown) => {
         if (this.lastTileDataRequestKey !== requestTileKey) {
@@ -303,6 +348,10 @@ export class App {
         const message = error instanceof Error ? error.message : 'unknown error';
         this.currentTileDataStatus = `error ${requestTileKey}: ${message}`;
       });
+  }
+
+  private formatRoadWidthRange(stats: RoadMeshStats): string {
+    return `${stats.minResolvedWidthMeters.toFixed(1)}-${stats.maxResolvedWidthMeters.toFixed(1)}`;
   }
 
   private createTileFetchParams(currentTile: TileCoordinate, tileKey: string): TileFetchParams {
