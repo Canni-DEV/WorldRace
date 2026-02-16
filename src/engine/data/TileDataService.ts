@@ -68,6 +68,13 @@ interface MetaTileContext {
   };
 }
 
+interface AxisAlignedBounds {
+  readonly minEast: number;
+  readonly minNorth: number;
+  readonly maxEast: number;
+  readonly maxNorth: number;
+}
+
 interface GlobalRoadFeature {
   readonly id: string;
   readonly globalPoints: readonly PointMeters[];
@@ -796,24 +803,26 @@ export class TileDataService {
     for (const area of meta.terrainAreas) {
       const localPolygons: BuildingPolygon[] = [];
       for (const polygon of area.polygons) {
-        if (!this.polygonBoundsIntersects(polygon.outer, expandedBounds)) {
-          continue;
-        }
-        if (
-          !this.isPolygonOwnedByTile(
-            polygon.outer,
-            params.tileCoordinate,
-            params.tileSizeMeters,
-          )
-        ) {
+        if (!this.polygonBoundsIntersects(polygon.outer, tileBounds)) {
           continue;
         }
 
-        const localOuter = polygon.outer.map((point) => ({
+        const clippedOuterGlobal = this.clipPolygonRingToBounds(polygon.outer, tileBounds);
+        if (clippedOuterGlobal === null) {
+          continue;
+        }
+
+        const localOuter = clippedOuterGlobal.map((point) => ({
           east: point.east - params.tileOriginGlobalMeters.east,
           north: point.north - params.tileOriginGlobalMeters.north,
         }));
         const localHoles = polygon.holes
+          .map((hole) => this.clipPolygonRingToBounds(hole, tileBounds))
+          .filter((hole): hole is PointMeters[] => hole !== null)
+          .filter((hole) => {
+            const anchor = hole[0];
+            return anchor !== undefined && this.pointInPolygon(anchor, clippedOuterGlobal);
+          })
           .map((hole) =>
             hole.map((point) => ({
               east: point.east - params.tileOriginGlobalMeters.east,
@@ -1609,6 +1618,159 @@ export class TileDataService {
     }
 
     return inside;
+  }
+
+  private clipPolygonRingToBounds(
+    ring: readonly PointMeters[],
+    bounds: AxisAlignedBounds,
+  ): PointMeters[] | null {
+    const openRing = this.toOpenPolygonRing(ring);
+    if (openRing.length < 3) {
+      return null;
+    }
+
+    let clipped = openRing;
+    clipped = this.clipOpenRingAgainstEdge(
+      clipped,
+      (point) => point.east >= bounds.minEast,
+      (start, end) => this.intersectSegmentWithVerticalBoundary(start, end, bounds.minEast),
+    );
+    clipped = this.clipOpenRingAgainstEdge(
+      clipped,
+      (point) => point.east <= bounds.maxEast,
+      (start, end) => this.intersectSegmentWithVerticalBoundary(start, end, bounds.maxEast),
+    );
+    clipped = this.clipOpenRingAgainstEdge(
+      clipped,
+      (point) => point.north >= bounds.minNorth,
+      (start, end) => this.intersectSegmentWithHorizontalBoundary(start, end, bounds.minNorth),
+    );
+    clipped = this.clipOpenRingAgainstEdge(
+      clipped,
+      (point) => point.north <= bounds.maxNorth,
+      (start, end) => this.intersectSegmentWithHorizontalBoundary(start, end, bounds.maxNorth),
+    );
+
+    if (clipped.length < 3) {
+      return null;
+    }
+
+    const compact = this.collapseConsecutivePoints(
+      clipped.map((point) => this.clampPointToBounds(point, bounds)),
+      POLYGON_POINT_EPSILON_METERS,
+    );
+    if (compact.length < 3) {
+      return null;
+    }
+
+    const closed = this.ensureClosedPolygon(compact);
+    const area = Math.abs(this.computeSignedArea(closed));
+    if (!Number.isFinite(area) || area < 0.25) {
+      return null;
+    }
+
+    return closed;
+  }
+
+  private toOpenPolygonRing(ring: readonly PointMeters[]): PointMeters[] {
+    if (ring.length === 0) {
+      return [];
+    }
+
+    const first = ring[0];
+    const last = ring[ring.length - 1];
+    if (
+      first !== undefined &&
+      last !== undefined &&
+      this.pointsNear(first, last, POLYGON_POINT_EPSILON_METERS)
+    ) {
+      return [...ring.slice(0, ring.length - 1)];
+    }
+
+    return [...ring];
+  }
+
+  private clipOpenRingAgainstEdge(
+    ring: readonly PointMeters[],
+    isInside: (point: PointMeters) => boolean,
+    intersect: (start: PointMeters, end: PointMeters) => PointMeters,
+  ): PointMeters[] {
+    if (ring.length === 0) {
+      return [];
+    }
+
+    const output: PointMeters[] = [];
+    for (let index = 0; index < ring.length; index += 1) {
+      const current = ring[index];
+      const previous = ring[(index - 1 + ring.length) % ring.length];
+      if (current === undefined || previous === undefined) {
+        continue;
+      }
+
+      const currentInside = isInside(current);
+      const previousInside = isInside(previous);
+
+      if (currentInside) {
+        if (!previousInside) {
+          output.push(intersect(previous, current));
+        }
+        output.push(current);
+        continue;
+      }
+
+      if (previousInside) {
+        output.push(intersect(previous, current));
+      }
+    }
+
+    return output;
+  }
+
+  private intersectSegmentWithVerticalBoundary(
+    start: PointMeters,
+    end: PointMeters,
+    edgeEast: number,
+  ): PointMeters {
+    const deltaEast = end.east - start.east;
+    if (Math.abs(deltaEast) <= Number.EPSILON) {
+      return {
+        east: edgeEast,
+        north: start.north,
+      };
+    }
+
+    const t = (edgeEast - start.east) / deltaEast;
+    return {
+      east: edgeEast,
+      north: start.north + (end.north - start.north) * t,
+    };
+  }
+
+  private intersectSegmentWithHorizontalBoundary(
+    start: PointMeters,
+    end: PointMeters,
+    edgeNorth: number,
+  ): PointMeters {
+    const deltaNorth = end.north - start.north;
+    if (Math.abs(deltaNorth) <= Number.EPSILON) {
+      return {
+        east: start.east,
+        north: edgeNorth,
+      };
+    }
+
+    const t = (edgeNorth - start.north) / deltaNorth;
+    return {
+      east: start.east + (end.east - start.east) * t,
+      north: edgeNorth,
+    };
+  }
+
+  private clampPointToBounds(point: PointMeters, bounds: AxisAlignedBounds): PointMeters {
+    return {
+      east: Math.max(bounds.minEast, Math.min(bounds.maxEast, point.east)),
+      north: Math.max(bounds.minNorth, Math.min(bounds.maxNorth, point.north)),
+    };
   }
 
   private parsePositiveInteger(value: string | null): number | null {
