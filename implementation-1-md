@@ -258,6 +258,33 @@
 
 **Acceptance**
 - [ ] Previously downloaded area works without network access.
+
+---
+
+### PR-13: Terrain base layer (simplified world ground)
+**Goal:** add a solid terrain floor per tile so roads/buildings/decoration sit on top of a readable world context.
+**Status:** implemented locally for Phases A+B+C (build validation blocked by local Rollup optional dependency issue).
+
+**Checklist**
+- [x] Extend OSM fetch coverage for basic terrain classes (`water`, `urban`, `green`).
+- [x] Normalize terrain polygons from ways/relations into tile payload.
+- [x] Compute dominant terrain type per tile with deterministic fallback heuristics.
+- [x] Render one solid plane per tile at `y=-0.03` with class color:
+- [x] urban -> concrete gray
+- [x] green -> field/vegetation green
+- [x] water -> blue
+- [x] Integrate terrain mesh into stream lifecycle (upsert/unload/dispose).
+- [x] Add debug visibility for terrain class and rendered terrain tile count.
+
+**Phases**
+- [x] **Fase A (rápida, 1 PR):** tipo dominante por tile + plano sólido + colores.
+- [x] **Fase B:** mejorar cobertura (clipping parcial de polígonos en borde de tile).
+- [x] **Fase C (opcional):** mosaico más fino dentro del tile (subceldas 16x16) para transiciones locales.
+
+**Acceptance**
+- [ ] Every loaded tile renders a stable ground plane under roads/buildings.
+- [ ] Dominant class (urban/green/water) is deterministic for same tile data.
+- [ ] Terrain unload/dispose path does not leak GPU geometries/materials.
 - [ ] No critical errors in cold/warm/offline startup scenarios.
 - [ ] Public demo meets baseline FPS/memory budgets.
 

@@ -16,7 +16,8 @@ export interface RuntimeConfig {
   readonly streamPrefetchDeferMsWhenForegroundIncomplete: number;
   readonly streamTileHysteresisMeters: number;
 }
-
+//Casa -32.95016559793226, -60.63083041636645
+//Casa LasPa -32.68501167668344, -61.52219240633147
 export const runtimeConfig: RuntimeConfig = Object.freeze({
   initialLatitude: -32.68501167668344,
   initialLongitude: -61.52219240633147,

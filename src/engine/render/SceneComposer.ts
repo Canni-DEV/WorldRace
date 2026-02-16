@@ -22,6 +22,7 @@ import {
   Uint32BufferAttribute,
   WebGLRenderer,
 } from 'three';
+import type { TerrainKind } from '../data/Types';
 import type { GeoBoundsMeters } from '../geo/GeoBounds';
 import type { TileCoordinate } from '../geo/TileSystem';
 import type { BuildingTileMeshPayload } from '../world/BuildingMeshTypes';
@@ -30,6 +31,19 @@ import type {
   DecorationTileMeshPayload,
 } from '../world/DecorationMeshTypes';
 import type { RoadTileMeshPayload } from '../world/RoadMeshTypes';
+import type { TerrainTileMeshPayload } from '../world/TerrainMeshTypes';
+
+interface TerrainTileBundle {
+  readonly tileKey: string;
+  readonly group: Group;
+  readonly kindBundles: readonly TerrainKindBundle[];
+}
+
+interface TerrainKindBundle {
+  readonly kind: TerrainKind;
+  readonly geometry: BufferGeometry;
+  readonly mesh: Mesh;
+}
 
 interface RoadTileBundle {
   readonly tileKey: string;
@@ -87,9 +101,11 @@ export class SceneComposer {
   private readonly camera: PerspectiveCamera;
   private readonly renderer: WebGLRenderer;
   private readonly container: HTMLElement;
+  private readonly terrainRoot = new Group();
   private readonly roadRoot = new Group();
   private readonly buildingRoot = new Group();
   private readonly decorationRoot = new Group();
+  private readonly terrainTileBundles = new Map<string, TerrainTileBundle>();
   private readonly roadTileBundles = new Map<string, RoadTileBundle>();
   private readonly buildingTileBundles = new Map<string, BuildingTileBundle>();
   private readonly decorationTileBundles = new Map<string, DecorationTileBundle>();
@@ -103,6 +119,9 @@ export class SceneComposer {
     color: 0x2c313a,
     roughness: 0.95,
     metalness: 0.02,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
   });
   private readonly roadWireframeMaterial = new MeshBasicMaterial({
     color: 0x94a3b8,
@@ -123,6 +142,26 @@ export class SceneComposer {
     metalness: 0.04,
     side: DoubleSide,
   });
+  private readonly terrainMaterialByKind: Readonly<Record<TerrainKind, MeshStandardMaterial>> = {
+    urban: new MeshStandardMaterial({
+      color: 0x78716c,
+      roughness: 0.96,
+      metalness: 0.02,
+      side: DoubleSide,
+    }),
+    green: new MeshStandardMaterial({
+      color: 0x4d7c0f,
+      roughness: 0.98,
+      metalness: 0.01,
+      side: DoubleSide,
+    }),
+    water: new MeshStandardMaterial({
+      color: 0x0e7490,
+      roughness: 0.4,
+      metalness: 0.03,
+      side: DoubleSide,
+    }),
+  };
   private readonly decorationGeometryByKind: Readonly<Record<DecorationPropKind, BufferGeometry>>;
   private readonly decorationMaterialByKind: Readonly<Record<DecorationPropKind, MeshStandardMaterial>>;
   private readonly instanceTransformHelper = new Object3D();
@@ -141,7 +180,7 @@ export class SceneComposer {
     this.scene = new Scene();
     this.scene.background = new Color(0x0a1325);
 
-    this.camera = new PerspectiveCamera(60, 1, 0.1, 3000);
+    this.camera = new PerspectiveCamera(60, 1, 0.75, 1600);
     this.camera.position.set(16, 12, 16);
     this.camera.lookAt(0, 0, 0);
 
@@ -162,6 +201,7 @@ export class SceneComposer {
     this.scene.add(
       ambientLight,
       directionalLight,
+      this.terrainRoot,
       this.roadRoot,
       this.buildingRoot,
       this.decorationRoot,
@@ -203,6 +243,7 @@ export class SceneComposer {
   public setWorldOffset(offsetEast: number, offsetNorth: number): void {
     this.worldOffsetEast = offsetEast;
     this.worldOffsetNorth = offsetNorth;
+    this.terrainRoot.position.set(-offsetEast, 0, -offsetNorth);
     this.roadRoot.position.set(-offsetEast, 0, -offsetNorth);
     this.buildingRoot.position.set(-offsetEast, 0, -offsetNorth);
     this.decorationRoot.position.set(-offsetEast, 0, -offsetNorth);
@@ -225,6 +266,46 @@ export class SceneComposer {
         }
       }
     }
+  }
+
+  public upsertTerrainTileMesh(tileMesh: TerrainTileMeshPayload): void {
+    this.removeTerrainTileMesh(tileMesh.tileKey);
+    if (tileMesh.kindChunks.length === 0) {
+      return;
+    }
+
+    const group = new Group();
+    group.name = `terrain-tile:${tileMesh.tileKey}`;
+    const kindBundles: TerrainKindBundle[] = [];
+    for (const kindChunk of tileMesh.kindChunks) {
+      if (kindChunk.positions.length === 0 || kindChunk.indices.length === 0) {
+        continue;
+      }
+
+      const geometry = this.createIndexedGeometry(kindChunk.positions, kindChunk.indices);
+      const material = this.terrainMaterialByKind[kindChunk.kind];
+      const surfaceMesh = new Mesh(geometry, material);
+      surfaceMesh.name = `terrain-surface-${kindChunk.kind}`;
+      surfaceMesh.castShadow = false;
+      surfaceMesh.receiveShadow = true;
+      group.add(surfaceMesh);
+      kindBundles.push({
+        kind: kindChunk.kind,
+        geometry,
+        mesh: surfaceMesh,
+      });
+    }
+
+    if (kindBundles.length === 0) {
+      return;
+    }
+
+    this.terrainRoot.add(group);
+    this.terrainTileBundles.set(tileMesh.tileKey, {
+      tileKey: tileMesh.tileKey,
+      group,
+      kindBundles,
+    });
   }
 
   public upsertRoadTileMesh(tileMesh: RoadTileMeshPayload): void {
@@ -391,6 +472,7 @@ export class SceneComposer {
   }
 
   public dispose(): void {
+    this.clearTerrainTiles();
     this.clearRoadTiles();
     this.clearBuildingTiles();
     this.clearDecorationTiles();
@@ -406,6 +488,9 @@ export class SceneComposer {
     this.roadCollisionMaterial.dispose();
     this.roadDebugLineMaterial.dispose();
     this.buildingMaterial.dispose();
+    for (const material of Object.values(this.terrainMaterialByKind)) {
+      material.dispose();
+    }
     for (const geometry of Object.values(this.decorationGeometryByKind)) {
       geometry.dispose();
     }
@@ -415,6 +500,12 @@ export class SceneComposer {
 
     this.renderer.dispose();
     this.renderer.domElement.remove();
+  }
+
+  private clearTerrainTiles(): void {
+    for (const tileKey of this.terrainTileBundles.keys()) {
+      this.removeTerrainTileMesh(tileKey);
+    }
   }
 
   private clearRoadTiles(): void {
@@ -432,6 +523,19 @@ export class SceneComposer {
   private clearDecorationTiles(): void {
     for (const tileKey of this.decorationTileBundles.keys()) {
       this.removeDecorationTileMesh(tileKey);
+    }
+  }
+
+  public removeTerrainTileMesh(tileKey: string): void {
+    const bundle = this.terrainTileBundles.get(tileKey);
+    if (bundle === undefined) {
+      return;
+    }
+
+    this.terrainTileBundles.delete(tileKey);
+    this.terrainRoot.remove(bundle.group);
+    for (const kindBundle of bundle.kindBundles) {
+      kindBundle.geometry.dispose();
     }
   }
 
@@ -472,6 +576,10 @@ export class SceneComposer {
 
   public getRoadTileCount(): number {
     return this.roadTileBundles.size;
+  }
+
+  public getTerrainTileCount(): number {
+    return this.terrainTileBundles.size;
   }
 
   public getBuildingTileCount(): number {

@@ -71,12 +71,32 @@ interface EndpointHealthState {
   avgLatencyMs: number;
 }
 
+const DEFAULT_OVERPASS_PROXY_BASE_URL = 'http://localhost:8080';
+const PUBLIC_OVERPASS_ENDPOINTS = Object.freeze([
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.openstreetmap.ru/api/interpreter',
+]);
+
+function toInterpreterEndpoint(baseUrl: string): string {
+  const trimmedBaseUrl = baseUrl.trim().replace(/\/+$/, '');
+  if (trimmedBaseUrl.endsWith('/api/interpreter')) {
+    return trimmedBaseUrl;
+  }
+  return `${trimmedBaseUrl}/api/interpreter`;
+}
+
+const configuredProxyBaseUrl = import.meta.env.VITE_OVERPASS_PROXY_URL?.trim();
+const defaultProxyEndpoint = toInterpreterEndpoint(
+  configuredProxyBaseUrl !== undefined && configuredProxyBaseUrl.length > 0
+    ? configuredProxyBaseUrl
+    : DEFAULT_OVERPASS_PROXY_BASE_URL,
+);
+const isProxyEnabledForDevelopment =
+  import.meta.env.DEV && import.meta.env.VITE_OVERPASS_PROXY_ENABLED === 'true';
+
 const defaultConfig: OverpassClientConfig = {
-  endpoints: [
-    'https://overpass-api.de/api/interpreter',
-    'https://overpass.kumi.systems/api/interpreter',
-    'https://overpass.openstreetmap.ru/api/interpreter',
-  ],
+  endpoints: isProxyEnabledForDevelopment ? [defaultProxyEndpoint] : PUBLIC_OVERPASS_ENDPOINTS,
   timeoutMsForeground: 12000,
   timeoutMsBackground: 20000,
   maxRetries: 2,
@@ -150,6 +170,14 @@ export class OverpassClient {
 
         this.recordEndpointFailure(endpointSelection.index);
         lastError = error instanceof Error ? error : new Error('Unknown Overpass error');
+        console.error('[OverpassClient] Request failed.', {
+          endpoint,
+          attempt: attempt + 1,
+          maxAttempts: this.config.maxRetries + 1,
+          priority: options.priority ?? 'foreground',
+          bounds,
+          error: lastError.message,
+        });
         const isLastAttempt = attempt >= this.config.maxRetries;
         if (isLastAttempt) {
           break;
@@ -160,6 +188,12 @@ export class OverpassClient {
       }
     }
 
+    console.error('[OverpassClient] Exhausted retries.', {
+      maxAttempts: this.config.maxRetries + 1,
+      priority: options.priority ?? 'foreground',
+      bounds,
+      error: lastError?.message ?? 'Unknown Overpass error',
+    });
     throw lastError ?? new Error('Overpass request failed without details.');
   }
 
@@ -226,9 +260,19 @@ export class OverpassClient {
   way["landuse"="forest"](${bbox});
   way["natural"~"^(wood|scrub)$"](${bbox});
   way["leisure"="park"](${bbox});
+  way["natural"~"^(water|wetland)$"](${bbox});
+  way["waterway"="riverbank"](${bbox});
+  way["landuse"~"^(reservoir|residential|commercial|industrial|retail|forest|farmland|meadow|grass)$"](${bbox});
+  way["natural"~"^(wood|scrub|grassland)$"](${bbox});
+  way["leisure"~"^(park|garden|golf_course)$"](${bbox});
   relation["landuse"="forest"](${bbox});
   relation["natural"~"^(wood|scrub)$"](${bbox});
   relation["leisure"="park"](${bbox});
+  relation["natural"~"^(water|wetland)$"](${bbox});
+  relation["waterway"="riverbank"](${bbox});
+  relation["landuse"~"^(reservoir|residential|commercial|industrial|retail|forest|farmland|meadow|grass)$"](${bbox});
+  relation["natural"~"^(wood|scrub|grassland)$"](${bbox});
+  relation["leisure"~"^(park|garden|golf_course)$"](${bbox});
 );
 out geom tags;`;
   }

@@ -46,6 +46,26 @@ export interface DecorationAreaFeature {
   readonly polygons: readonly BuildingPolygon[];
 }
 
+export type TerrainKind = 'urban' | 'green' | 'water';
+
+export interface TerrainAreaFeature {
+  readonly id: string;
+  readonly kind: TerrainKind;
+  readonly polygons: readonly BuildingPolygon[];
+}
+
+export interface TileTerrainCoverage {
+  readonly urban: number;
+  readonly green: number;
+  readonly water: number;
+}
+
+export interface TileTerrainSummary {
+  readonly dominantKind: TerrainKind;
+  readonly coverage: TileTerrainCoverage;
+  readonly confidence: number;
+}
+
 export interface RoadFeature {
   readonly id: string;
   readonly points: readonly PointMeters[];
@@ -77,6 +97,8 @@ export interface TileOSMData {
   readonly buildings: readonly BuildingFeature[];
   readonly decorationPoints: readonly DecorationPointFeature[];
   readonly decorationAreas: readonly DecorationAreaFeature[];
+  readonly terrainAreas: readonly TerrainAreaFeature[];
+  readonly terrainSummary: TileTerrainSummary;
   readonly emptyReason: TileEmptyReason;
 }
 
