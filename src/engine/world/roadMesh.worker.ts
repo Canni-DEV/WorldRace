@@ -9,7 +9,7 @@ import type {
 } from './RoadMeshBuildWorkerProtocol';
 
 const roadMesher = new RoadMesher();
-const workerScope: DedicatedWorkerGlobalScope = self;
+const workerScope = globalThis as unknown as DedicatedWorkerGlobalScope;
 
 const postSuccess = (
   scope: DedicatedWorkerGlobalScope,

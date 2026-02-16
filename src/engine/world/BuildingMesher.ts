@@ -4,7 +4,7 @@ import type {
   PointMeters,
   TileOSMData,
 } from '../data/Types';
-import type { BuildingMeshStats, BuildingTileMeshPayload } from './BuildingMeshTypes';
+import type { BuildingTileMeshPayload } from './BuildingMeshTypes';
 
 interface BuildingMesherConfig {
   readonly levelHeightMeters: number;
@@ -19,6 +19,15 @@ interface MutableBounds {
   minNorth: number;
   maxEast: number;
   maxNorth: number;
+}
+
+interface MutableBuildingMeshStats {
+  sourceBuildings: number;
+  lod0Buildings: number;
+  lod1Buildings: number;
+  lod0TriangleCount: number;
+  lod1TriangleCount: number;
+  droppedPolygons: number;
 }
 
 const defaultConfig: BuildingMesherConfig = {
@@ -50,7 +59,7 @@ export class BuildingMesher {
     const lod0Indices: number[] = [];
     const lod1Positions: number[] = [];
     const lod1Indices: number[] = [];
-    const stats: BuildingMeshStats = {
+    const stats: MutableBuildingMeshStats = {
       sourceBuildings: tileData.buildings.length,
       lod0Buildings: 0,
       lod1Buildings: 0,

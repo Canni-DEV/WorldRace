@@ -19,6 +19,26 @@ export interface RuntimeConfig {
   readonly streamTileHysteresisMeters: number;
   readonly routeWeightingProfile: RouteWeightingProfile;
 }
+
+const defaultRouteWeightingProfile: RouteWeightingProfile = {
+  excludedCategories: ['service'],
+  categoryWeightByKind: {
+    street: 1,
+    avenue: 0.95,
+    route: 0.9,
+    highway: 0.88,
+    service: 1.25,
+    path: 1.35,
+    other: 1.1,
+  },
+  pavementWeightByKind: {
+    paved: 0.95,
+    unpaved: 1.3,
+    unknown: 1,
+  },
+  minWeightMultiplier: 0.5,
+  maxWeightMultiplier: 4,
+};
 //Casa -32.95016559793226, -60.63083041636645
 //Casa LasPa -32.68501167668344, -61.52219240633147
 export const runtimeConfig: RuntimeConfig = Object.freeze({
@@ -38,23 +58,5 @@ export const runtimeConfig: RuntimeConfig = Object.freeze({
   streamPrefetchRequestIntervalMs: 650,
   streamPrefetchDeferMsWhenForegroundIncomplete: 250,
   streamTileHysteresisMeters: 18,
-  routeWeightingProfile: {
-    excludedCategories: ['service'],
-    categoryWeightByKind: {
-      street: 1,
-      avenue: 0.95,
-      route: 0.9,
-      highway: 0.88,
-      service: 1.25,
-      path: 1.35,
-      other: 1.1,
-    },
-    pavementWeightByKind: {
-      paved: 0.95,
-      unpaved: 1.3,
-      unknown: 1,
-    },
-    minWeightMultiplier: 0.5,
-    maxWeightMultiplier: 4,
-  },
+  routeWeightingProfile: defaultRouteWeightingProfile,
 });

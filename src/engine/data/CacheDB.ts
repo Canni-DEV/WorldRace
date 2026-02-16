@@ -35,8 +35,8 @@ export class CacheDB {
     const database = await this.getDatabase();
     const transaction = database.transaction(storeName, 'readonly');
     const store = transaction.objectStore(storeName);
-    const request: IDBRequest<unknown> = store.get(key);
-    const result = await this.requestToPromise<CacheEnvelope<TPayload> | undefined>(request);
+    const request = store.get(key) as IDBRequest<CacheEnvelope<TPayload> | undefined>;
+    const result = await this.requestToPromise(request);
     await this.transactionDone(transaction);
     return result;
   }
@@ -122,8 +122,8 @@ export class CacheDB {
     const database = await this.getDatabase();
     const transaction = database.transaction(storeName, 'readonly');
     const store = transaction.objectStore(storeName);
-    const request: IDBRequest<unknown> = store.getAll();
-    const result = await this.requestToPromise<CacheEnvelope<TPayload>[]>(request);
+    const request = store.getAll() as IDBRequest<CacheEnvelope<TPayload>[]>;
+    const result = await this.requestToPromise(request);
     await this.transactionDone(transaction);
     return result;
   }
@@ -163,10 +163,10 @@ export class CacheDB {
     return this.databasePromise;
   }
 
-  private requestToPromise<T>(request: IDBRequest<unknown>): Promise<T> {
+  private requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       request.onsuccess = () => {
-        resolve(request.result as T);
+        resolve(request.result);
       };
 
       request.onerror = () => {

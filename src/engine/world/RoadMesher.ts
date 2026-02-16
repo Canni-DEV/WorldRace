@@ -1,6 +1,5 @@
 import type { TopologyEdge, TopologyPointMeters, TileRoadTopology } from './TopologyTypes';
 import type {
-  RoadMeshStats,
   RoadSurfaceChunkPayload,
   RoadSurfaceKind,
   RoadTileMeshPayload,
@@ -50,6 +49,22 @@ interface JunctionBranch {
 interface JunctionCornerResult {
   readonly point: TopologyPointMeters;
   readonly style: 'miter' | 'bevel' | 'fallback';
+}
+
+interface MutableRoadMeshStats {
+  edgeCountMeshed: number;
+  droppedEdges: number;
+  triangleCount: number;
+  collisionTriangleCount: number;
+  minResolvedWidthMeters: number;
+  maxResolvedWidthMeters: number;
+  junctionNodesConsidered: number;
+  junctionPolygonsBuilt: number;
+  junctionTriangles: number;
+  junctionMiterCorners: number;
+  junctionBevelCorners: number;
+  junctionFallbackCorners: number;
+  junctionTriangulationFailures: number;
 }
 
 const defaultConfig: RoadMesherConfig = {
@@ -113,7 +128,7 @@ export class RoadMesher {
     const collisionPositions: number[] = [];
     const collisionIndices: number[] = [];
     const debugLinePositions: number[] = [];
-    const stats: RoadMeshStats = {
+    const stats: MutableRoadMeshStats = {
       edgeCountMeshed: 0,
       droppedEdges: 0,
       triangleCount: 0,
@@ -439,7 +454,7 @@ export class RoadMesher {
     collisionPositions: number[],
     collisionIndices: number[],
     debugLinePositions: number[],
-    stats: RoadMeshStats,
+    stats: MutableRoadMeshStats,
   ): void {
     const nodePointById = new Map<string, TopologyPointMeters>();
     for (const node of topology.nodes) {
