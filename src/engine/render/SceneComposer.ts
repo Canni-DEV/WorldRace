@@ -120,15 +120,15 @@ export class SceneComposer {
     roughness: 0.95,
     metalness: 0.02,
     polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
   });
   private readonly roadDirtSurfaceMaterial = new MeshStandardMaterial({
     color: 0x8b5e34,
     roughness: 0.98,
     metalness: 0.01,
     polygonOffset: true,
-    polygonOffsetFactor: -1,
+    polygonOffsetFactor: -0.75,
     polygonOffsetUnits: -1,
   });
   private readonly roadWireframeMaterial = new MeshBasicMaterial({
@@ -339,7 +339,13 @@ export class SceneComposer {
     const group = new Group();
     group.name = `road-tile:${tileMesh.tileKey}`;
     const surfaceGeometries: BufferGeometry[] = [];
-    for (const chunk of tileMesh.surfaceChunks) {
+    const orderedSurfaceChunks = [...tileMesh.surfaceChunks].sort((left, right) => {
+      if (left.kind === right.kind) {
+        return 0;
+      }
+      return left.kind === 'dirt' ? -1 : 1;
+    });
+    for (const chunk of orderedSurfaceChunks) {
       if (chunk.positions.length === 0 || chunk.indices.length === 0) {
         continue;
       }
@@ -355,6 +361,7 @@ export class SceneComposer {
 
       const surfaceMesh = new Mesh(surfaceGeometry, surfaceMaterial);
       surfaceMesh.name = `road-surface-${chunkSuffix}`;
+      surfaceMesh.renderOrder = chunk.kind === 'dirt' ? 10 : 11;
       surfaceMesh.castShadow = false;
       surfaceMesh.receiveShadow = true;
 
