@@ -17,6 +17,11 @@ export interface RuntimeConfig {
   readonly streamPrefetchRequestIntervalMs: number;
   readonly streamPrefetchDeferMsWhenForegroundIncomplete: number;
   readonly streamTileHysteresisMeters: number;
+  readonly demEnabled: boolean;
+  readonly demZoom: number;
+  readonly demEndpointTemplate: string;
+  readonly demMaxCachedTiles: number;
+  readonly demFallbackMeters: number;
   readonly routeWeightingProfile: RouteWeightingProfile;
 }
 
@@ -58,5 +63,10 @@ export const runtimeConfig: RuntimeConfig = Object.freeze({
   streamPrefetchRequestIntervalMs: 650,
   streamPrefetchDeferMsWhenForegroundIncomplete: 250,
   streamTileHysteresisMeters: 18,
+  demEnabled: true,
+  demZoom: 14,
+  demEndpointTemplate: 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
+  demMaxCachedTiles: 256,
+  demFallbackMeters: 0,
   routeWeightingProfile: defaultRouteWeightingProfile,
 });

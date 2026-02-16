@@ -8,6 +8,7 @@ export interface GeoBoundsLatLon {
 export interface PointMeters {
   readonly east: number;
   readonly north: number;
+  readonly elevationMeters?: number;
 }
 
 export type RoadCategory =
@@ -39,6 +40,14 @@ export interface RoadProperties {
   readonly lanes: number | null;
   readonly oneway: boolean | null;
   readonly maxspeed: string | null;
+  readonly layer: number | null;
+  readonly elevationMeters: number | null;
+  readonly isBridge: boolean;
+  readonly isTunnel: boolean;
+  readonly location: string | null;
+  readonly incline: string | null;
+  readonly hasEmbankment: boolean;
+  readonly hasCutting: boolean;
 }
 
 export interface BuildingProperties {

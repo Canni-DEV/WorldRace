@@ -30,7 +30,7 @@ import type {
 } from './Types';
 
 const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v10';
-const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-decoration-terrain-meta-v10';
+const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-decoration-terrain-meta-v11';
 const META_TILE_SCHEMA_VERSION = 'meta-tile-v7';
 const STATS_REFRESH_INTERVAL_MS = 2500;
 const POLYGON_POINT_EPSILON_METERS = 0.01;
@@ -1181,6 +1181,14 @@ export class TileDataService {
       lanes: this.parsePositiveInteger(tags?.lanes ?? null),
       oneway: this.parseOnewayTag(tags?.oneway ?? null),
       maxspeed: this.parseTagString(tags?.maxspeed ?? null),
+      layer: this.parseLayerTag(tags?.layer ?? null),
+      elevationMeters: this.parseElevationMeters(tags?.ele ?? null),
+      isBridge: this.parseAffirmativeTag(tags?.bridge ?? null),
+      isTunnel: this.parseAffirmativeTag(tags?.tunnel ?? null),
+      location: this.parseNormalizedTag(tags?.location ?? null),
+      incline: this.parseTagString(tags?.incline ?? null),
+      hasEmbankment: this.parseAffirmativeTag(tags?.embankment ?? null),
+      hasCutting: this.parseAffirmativeTag(tags?.cutting ?? null),
     };
   }
 
@@ -2000,6 +2008,59 @@ export class TileDataService {
     }
 
     return parsed;
+  }
+
+  private parseLayerTag(value: string | null): number | null {
+    if (value === null) {
+      return null;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (normalized.length === 0) {
+      return null;
+    }
+    const firstToken = normalized.split(';')[0]?.trim() ?? normalized;
+    if (firstToken.length === 0) {
+      return null;
+    }
+
+    const parsed = Number.parseInt(firstToken, 10);
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+    return Math.max(-10, Math.min(10, parsed));
+  }
+
+  private parseElevationMeters(value: string | null): number | null {
+    if (value === null) {
+      return null;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (normalized.length === 0) {
+      return null;
+    }
+
+    const firstToken = normalized.split(';')[0]?.trim() ?? normalized;
+    const match = /^-?\d+(\.\d+)?/.exec(firstToken);
+    if (match === null) {
+      return null;
+    }
+
+    const parsed = Number.parseFloat(match[0]);
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+    return parsed;
+  }
+
+  private parseAffirmativeTag(value: string | null): boolean {
+    if (value === null) {
+      return false;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (normalized.length === 0) {
+      return false;
+    }
+    return !(normalized === 'no' || normalized === 'false' || normalized === '0');
   }
 
   private parseTagString(value: string | null): string | null {

@@ -112,6 +112,7 @@ export class TopologyBuilder {
       const globalPoints: TopologyPointMeters[] = road.points.map((point) => ({
         east: point.east + tileOrigin.east,
         north: point.north + tileOrigin.north,
+        elevationMeters: point.elevationMeters,
       }));
       const cleaned = this.removeConsecutiveNearDuplicates(globalPoints, this.config.nodeMergeToleranceMeters * 0.25);
       if (cleaned.length < 2) {
@@ -173,6 +174,15 @@ export class TopologyBuilder {
           const refA = segments[segmentA];
           const refB = segments[segmentB];
           if (refA === undefined || refB === undefined) {
+            continue;
+          }
+
+          const roadA = roads[refA.roadIndex];
+          const roadB = roads[refB.roadIndex];
+          if (roadA === undefined || roadB === undefined) {
+            continue;
+          }
+          if (!this.shouldSplitRoadIntersection(roadA.properties, roadB.properties)) {
             continue;
           }
 
@@ -252,13 +262,14 @@ export class TopologyBuilder {
         continue;
       }
 
+      const roadStratum = this.resolveRoadStratum(road.properties);
       const splitIndices: number[] = [0];
       for (let index = 1; index < road.points.length - 1; index += 1) {
         const point = road.points[index];
         if (point === undefined) {
           continue;
         }
-        const key = this.quantizePoint(point);
+        const key = this.quantizePointWithStratum(point, roadStratum);
         if ((nodeKeyOccurrences.get(key) ?? 0) > 1) {
           splitIndices.push(index);
         }
@@ -290,14 +301,14 @@ export class TopologyBuilder {
           continue;
         }
 
-        const fromNodeKey = this.quantizePoint(fromPoint);
-        const toNodeKey = this.quantizePoint(toPoint);
+        const fromNodeKey = this.quantizePointWithStratum(fromPoint, roadStratum);
+        const toNodeKey = this.quantizePointWithStratum(toPoint, roadStratum);
         if (fromNodeKey === toNodeKey) {
           stats.droppedZeroLengthSegments += 1;
           continue;
         }
 
-        const dedupKey = this.buildEdgeDedupKey(canonicalPoints, road.properties.highway);
+        const dedupKey = this.buildEdgeDedupKey(canonicalPoints, road.properties.highway, roadStratum);
         if (edgeDedup.has(dedupKey)) {
           stats.duplicateEdgesDropped += 1;
           continue;
@@ -345,8 +356,9 @@ export class TopologyBuilder {
   private buildNodeOccurrences(roads: readonly RoadPolyline[]): Map<string, number> {
     const occurrences = new Map<string, number>();
     for (const road of roads) {
+      const roadStratum = this.resolveRoadStratum(road.properties);
       for (const point of road.points) {
-        const key = this.quantizePoint(point);
+        const key = this.quantizePointWithStratum(point, roadStratum);
         occurrences.set(key, (occurrences.get(key) ?? 0) + 1);
       }
     }
@@ -464,9 +476,17 @@ export class TopologyBuilder {
     end: TopologyPointMeters,
     t: number,
   ): TopologyPointMeters {
+    const startElevation = start.elevationMeters;
+    const endElevation = end.elevationMeters;
+    const interpolatedElevation =
+      startElevation !== undefined && endElevation !== undefined
+        ? startElevation + (endElevation - startElevation) * t
+        : startElevation ?? endElevation;
+
     return {
       east: start.east + (end.east - start.east) * t,
       north: start.north + (end.north - start.north) * t,
+      elevationMeters: interpolatedElevation,
     };
   }
 
@@ -475,6 +495,10 @@ export class TopologyBuilder {
     const qEast = Math.round(point.east / tolerance);
     const qNorth = Math.round(point.north / tolerance);
     return `${qEast}:${qNorth}`;
+  }
+
+  private quantizePointWithStratum(point: TopologyPointMeters, stratum: number): string {
+    return `${this.quantizePoint(point)}:s=${stratum}`;
   }
 
   private removeConsecutiveNearDuplicates(
@@ -551,10 +575,18 @@ export class TopologyBuilder {
         const q: TopologyPointMeters = {
           east: pointA.east * 0.75 + pointB.east * 0.25,
           north: pointA.north * 0.75 + pointB.north * 0.25,
+          elevationMeters:
+            pointA.elevationMeters !== undefined && pointB.elevationMeters !== undefined
+              ? pointA.elevationMeters * 0.75 + pointB.elevationMeters * 0.25
+              : pointA.elevationMeters ?? pointB.elevationMeters,
         };
         const r: TopologyPointMeters = {
           east: pointA.east * 0.25 + pointB.east * 0.75,
           north: pointA.north * 0.25 + pointB.north * 0.75,
+          elevationMeters:
+            pointA.elevationMeters !== undefined && pointB.elevationMeters !== undefined
+              ? pointA.elevationMeters * 0.25 + pointB.elevationMeters * 0.75
+              : pointA.elevationMeters ?? pointB.elevationMeters,
         };
         next.push(q, r);
       }
@@ -568,14 +600,36 @@ export class TopologyBuilder {
     return current;
   }
 
-  private buildEdgeDedupKey(points: readonly TopologyPointMeters[], highway: string): string {
+  private buildEdgeDedupKey(
+    points: readonly TopologyPointMeters[],
+    highway: string,
+    stratum: number,
+  ): string {
     const forward = points.map((point) => this.quantizePoint(point)).join(';');
     const reverse = [...points]
       .reverse()
       .map((point) => this.quantizePoint(point))
       .join(';');
     const canonical = forward < reverse ? forward : reverse;
-    return `${highway}|${canonical}`;
+    return `${highway}|s=${stratum}|${canonical}`;
+  }
+
+  private shouldSplitRoadIntersection(
+    roadA: RoadProperties,
+    roadB: RoadProperties,
+  ): boolean {
+    return this.resolveRoadStratum(roadA) === this.resolveRoadStratum(roadB);
+  }
+
+  private resolveRoadStratum(road: RoadProperties): number {
+    let stratum = road.layer ?? 0;
+    if (road.isBridge || road.hasEmbankment || road.location === 'overground') {
+      stratum += 1;
+    }
+    if (road.isTunnel || road.hasCutting || road.location === 'underground' || road.location === 'underwater') {
+      stratum -= 1;
+    }
+    return Math.max(-20, Math.min(20, stratum));
   }
 
   private resolveEdgeRouting(properties: RoadProperties, lengthMeters: number): TopologyEdgeRouting {

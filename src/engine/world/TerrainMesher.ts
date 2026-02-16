@@ -13,6 +13,10 @@ interface TerrainMesherConfig {
   readonly mosaicResolution: number;
 }
 
+export interface TerrainMesherBuildOptions {
+  readonly sampleElevationMeters?: (east: number, north: number) => number;
+}
+
 const defaultConfig: TerrainMesherConfig = {
   floorHeightMeters: -0.04,
   mosaicResolution: 16,
@@ -28,10 +32,12 @@ export class TerrainMesher {
     };
   }
 
-  public buildTileTerrainMesh(tileData: TileOSMData): TerrainTileMeshPayload {
+  public buildTileTerrainMesh(
+    tileData: TileOSMData,
+    options: TerrainMesherBuildOptions = {},
+  ): TerrainTileMeshPayload {
     const tileOriginEast = tileData.tileOriginGlobalMeters.east;
     const tileOriginNorth = tileData.tileOriginGlobalMeters.north;
-    const y = this.config.floorHeightMeters;
     const resolution = this.config.mosaicResolution;
     const cellSizeMeters = tileData.tileSizeMeters / resolution;
     const positionsByKind: Record<TerrainKind, number[]> = {
@@ -52,6 +58,10 @@ export class TerrainMesher {
         const minLocalNorth = cellY * cellSizeMeters;
         const maxLocalEast = minLocalEast + cellSizeMeters;
         const maxLocalNorth = minLocalNorth + cellSizeMeters;
+        const minGlobalEast = tileOriginEast + minLocalEast;
+        const minGlobalNorth = tileOriginNorth + minLocalNorth;
+        const maxGlobalEast = tileOriginEast + maxLocalEast;
+        const maxGlobalNorth = tileOriginNorth + maxLocalNorth;
         const centerPoint: PointMeters = {
           east: minLocalEast + cellSizeMeters * 0.5,
           north: minLocalNorth + cellSizeMeters * 0.5,
@@ -63,12 +73,17 @@ export class TerrainMesher {
           indicesByKind[cellKind],
           vertexCountByKind[cellKind],
           {
-            minEast: tileOriginEast + minLocalEast,
-            minNorth: tileOriginNorth + minLocalNorth,
-            maxEast: tileOriginEast + maxLocalEast,
-            maxNorth: tileOriginNorth + maxLocalNorth,
+            minEast: minGlobalEast,
+            minNorth: minGlobalNorth,
+            maxEast: maxGlobalEast,
+            maxNorth: maxGlobalNorth,
           },
-          y,
+          {
+            minWestSouth: this.resolveHeightMeters(minGlobalEast, minGlobalNorth, options),
+            maxEastSouth: this.resolveHeightMeters(maxGlobalEast, minGlobalNorth, options),
+            maxEastNorth: this.resolveHeightMeters(maxGlobalEast, maxGlobalNorth, options),
+            minWestNorth: this.resolveHeightMeters(minGlobalEast, maxGlobalNorth, options),
+          },
         );
         vertexCountByKind[cellKind] += 4;
       }
@@ -227,13 +242,18 @@ export class TerrainMesher {
       readonly maxEast: number;
       readonly maxNorth: number;
     },
-    y: number,
+    heightMeters: {
+      readonly minWestSouth: number;
+      readonly maxEastSouth: number;
+      readonly maxEastNorth: number;
+      readonly minWestNorth: number;
+    },
   ): void {
     positions.push(
-      bounds.minEast, y, bounds.minNorth,
-      bounds.maxEast, y, bounds.minNorth,
-      bounds.maxEast, y, bounds.maxNorth,
-      bounds.minEast, y, bounds.maxNorth,
+      bounds.minEast, heightMeters.minWestSouth, bounds.minNorth,
+      bounds.maxEast, heightMeters.maxEastSouth, bounds.minNorth,
+      bounds.maxEast, heightMeters.maxEastNorth, bounds.maxNorth,
+      bounds.minEast, heightMeters.minWestNorth, bounds.maxNorth,
     );
 
     indices.push(
@@ -258,5 +278,17 @@ export class TerrainMesher {
       green: initialValue,
       water: initialValue,
     };
+  }
+
+  private resolveHeightMeters(
+    east: number,
+    north: number,
+    options: TerrainMesherBuildOptions,
+  ): number {
+    const sampledHeight = options.sampleElevationMeters?.(east, north);
+    if (sampledHeight === undefined || !Number.isFinite(sampledHeight)) {
+      return this.config.floorHeightMeters;
+    }
+    return sampledHeight;
   }
 }

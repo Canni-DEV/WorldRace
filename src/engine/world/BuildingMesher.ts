@@ -14,6 +14,10 @@ interface BuildingMesherConfig {
   readonly roofGableHeightMeters: number;
 }
 
+export interface BuildingMesherBuildOptions {
+  readonly sampleElevationMeters?: (east: number, north: number) => number;
+}
+
 interface MutableBounds {
   minEast: number;
   minNorth: number;
@@ -54,7 +58,10 @@ export class BuildingMesher {
     };
   }
 
-  public buildTileBuildingMesh(tileData: TileOSMData): BuildingTileMeshPayload {
+  public buildTileBuildingMesh(
+    tileData: TileOSMData,
+    options: BuildingMesherBuildOptions = {},
+  ): BuildingTileMeshPayload {
     const lod0Positions: number[] = [];
     const lod0Indices: number[] = [];
     const lod1Positions: number[] = [];
@@ -86,9 +93,11 @@ export class BuildingMesher {
         const holes = polygon.holes
           .map((hole) => this.offsetRingToGlobal(this.toOpenRing(hole), tileData.tileOriginGlobalMeters))
           .filter((hole) => hole.length >= 3);
+        const baseElevationMeters = this.resolvePolygonBaseElevation(outer, options);
         const appended = this.appendLod0BuildingPolygon(
           outer,
           holes,
+          baseElevationMeters,
           buildingHeight,
           building.properties.roofShape,
           lod0Positions,
@@ -105,7 +114,13 @@ export class BuildingMesher {
             ? this.ensureWinding(simplifiedOuter, true)
             : this.ensureWinding(outer, true);
         if (lod1Outer.length >= 3) {
-          this.appendLod1BuildingPolygon(lod1Outer, buildingHeight, lod1Positions, lod1Indices);
+          this.appendLod1BuildingPolygon(
+            lod1Outer,
+            baseElevationMeters,
+            buildingHeight,
+            lod1Positions,
+            lod1Indices,
+          );
           hasLod1Geometry = true;
         }
         hasLod0Geometry = true;
@@ -180,6 +195,7 @@ export class BuildingMesher {
   private appendLod0BuildingPolygon(
     outerRing: readonly PointMeters[],
     holes: readonly (readonly PointMeters[])[],
+    baseElevationMeters: number,
     heightMeters: number,
     roofShape: string | null,
     positions: number[],
@@ -194,23 +210,37 @@ export class BuildingMesher {
       .map((hole) => this.ensureWinding(hole, false))
       .filter((hole) => hole.length >= 3);
 
-    this.appendWallsForRing(normalizedOuter, heightMeters, positions, indices);
+    this.appendWallsForRing(normalizedOuter, baseElevationMeters, heightMeters, positions, indices);
     for (const hole of normalizedHoles) {
-      this.appendWallsForRing(hole, heightMeters, positions, indices);
+      this.appendWallsForRing(hole, baseElevationMeters, heightMeters, positions, indices);
     }
 
     if (roofShape === 'gabled' && normalizedHoles.length === 0 && normalizedOuter.length === 4) {
-      this.appendSimpleGabledRoof(normalizedOuter, heightMeters, positions, indices);
+      this.appendSimpleGabledRoof(
+        normalizedOuter,
+        baseElevationMeters,
+        heightMeters,
+        positions,
+        indices,
+      );
       return true;
     }
 
-    this.appendFlatRoof(normalizedOuter, normalizedHoles, heightMeters, positions, indices);
+    this.appendFlatRoof(
+      normalizedOuter,
+      normalizedHoles,
+      baseElevationMeters,
+      heightMeters,
+      positions,
+      indices,
+    );
     return true;
   }
 
   private appendFlatRoof(
     outerRing: readonly PointMeters[],
     holes: readonly (readonly PointMeters[])[],
+    baseElevationMeters: number,
     heightMeters: number,
     positions: number[],
     indices: number[],
@@ -222,7 +252,7 @@ export class BuildingMesher {
     const baseVertex = Math.floor(positions.length / 3);
     const flatPoints = [...outerRing, ...holes.flatMap((hole) => hole)];
     for (const point of flatPoints) {
-      positions.push(point.east, heightMeters, point.north);
+      positions.push(point.east, baseElevationMeters + heightMeters, point.north);
     }
 
     for (const triangle of triangulated) {
@@ -244,20 +274,21 @@ export class BuildingMesher {
 
   private appendSimpleGabledRoof(
     outerRing: readonly PointMeters[],
+    baseElevationMeters: number,
     baseHeightMeters: number,
     positions: number[],
     indices: number[],
   ): void {
     const bounds = this.computeBounds(outerRing);
     if (bounds === null) {
-      this.appendFlatRoof(outerRing, [], baseHeightMeters, positions, indices);
+      this.appendFlatRoof(outerRing, [], baseElevationMeters, baseHeightMeters, positions, indices);
       return;
     }
 
     const widthEast = bounds.maxEast - bounds.minEast;
     const widthNorth = bounds.maxNorth - bounds.minNorth;
     if (widthEast <= 0 || widthNorth <= 0) {
-      this.appendFlatRoof(outerRing, [], baseHeightMeters, positions, indices);
+      this.appendFlatRoof(outerRing, [], baseElevationMeters, baseHeightMeters, positions, indices);
       return;
     }
 
@@ -265,15 +296,35 @@ export class BuildingMesher {
       this.config.roofGableHeightMeters,
       Math.max(0.8, baseHeightMeters * 0.2),
     );
-    const roofY = baseHeightMeters + ridgeHeightMeters;
+    const roofY = baseElevationMeters + baseHeightMeters + ridgeHeightMeters;
     const centerEast = (bounds.minEast + bounds.maxEast) * 0.5;
     const centerNorth = (bounds.minNorth + bounds.maxNorth) * 0.5;
 
     if (widthEast >= widthNorth) {
-      const c0 = this.pushVertex(positions, bounds.minEast, baseHeightMeters, bounds.minNorth);
-      const c1 = this.pushVertex(positions, bounds.maxEast, baseHeightMeters, bounds.minNorth);
-      const c2 = this.pushVertex(positions, bounds.maxEast, baseHeightMeters, bounds.maxNorth);
-      const c3 = this.pushVertex(positions, bounds.minEast, baseHeightMeters, bounds.maxNorth);
+      const c0 = this.pushVertex(
+        positions,
+        bounds.minEast,
+        baseElevationMeters + baseHeightMeters,
+        bounds.minNorth,
+      );
+      const c1 = this.pushVertex(
+        positions,
+        bounds.maxEast,
+        baseElevationMeters + baseHeightMeters,
+        bounds.minNorth,
+      );
+      const c2 = this.pushVertex(
+        positions,
+        bounds.maxEast,
+        baseElevationMeters + baseHeightMeters,
+        bounds.maxNorth,
+      );
+      const c3 = this.pushVertex(
+        positions,
+        bounds.minEast,
+        baseElevationMeters + baseHeightMeters,
+        bounds.maxNorth,
+      );
       const ridgeA = this.pushVertex(positions, bounds.minEast, roofY, centerNorth);
       const ridgeB = this.pushVertex(positions, bounds.maxEast, roofY, centerNorth);
 
@@ -286,10 +337,30 @@ export class BuildingMesher {
       return;
     }
 
-    const c0 = this.pushVertex(positions, bounds.minEast, baseHeightMeters, bounds.minNorth);
-    const c1 = this.pushVertex(positions, bounds.maxEast, baseHeightMeters, bounds.minNorth);
-    const c2 = this.pushVertex(positions, bounds.maxEast, baseHeightMeters, bounds.maxNorth);
-    const c3 = this.pushVertex(positions, bounds.minEast, baseHeightMeters, bounds.maxNorth);
+    const c0 = this.pushVertex(
+      positions,
+      bounds.minEast,
+      baseElevationMeters + baseHeightMeters,
+      bounds.minNorth,
+    );
+    const c1 = this.pushVertex(
+      positions,
+      bounds.maxEast,
+      baseElevationMeters + baseHeightMeters,
+      bounds.minNorth,
+    );
+    const c2 = this.pushVertex(
+      positions,
+      bounds.maxEast,
+      baseElevationMeters + baseHeightMeters,
+      bounds.maxNorth,
+    );
+    const c3 = this.pushVertex(
+      positions,
+      bounds.minEast,
+      baseElevationMeters + baseHeightMeters,
+      bounds.maxNorth,
+    );
     const ridgeA = this.pushVertex(positions, centerEast, roofY, bounds.minNorth);
     const ridgeB = this.pushVertex(positions, centerEast, roofY, bounds.maxNorth);
 
@@ -303,16 +374,18 @@ export class BuildingMesher {
 
   private appendLod1BuildingPolygon(
     outerRing: readonly PointMeters[],
+    baseElevationMeters: number,
     heightMeters: number,
     positions: number[],
     indices: number[],
   ): void {
-    this.appendWallsForRing(outerRing, heightMeters, positions, indices);
-    this.appendFlatRoof(outerRing, [], heightMeters, positions, indices);
+    this.appendWallsForRing(outerRing, baseElevationMeters, heightMeters, positions, indices);
+    this.appendFlatRoof(outerRing, [], baseElevationMeters, heightMeters, positions, indices);
   }
 
   private appendWallsForRing(
     ring: readonly PointMeters[],
+    baseElevationMeters: number,
     heightMeters: number,
     positions: number[],
     indices: number[],
@@ -332,16 +405,16 @@ export class BuildingMesher {
       const baseVertex = Math.floor(positions.length / 3);
       positions.push(
         current.east,
-        0,
+        baseElevationMeters,
         current.north,
         next.east,
-        0,
+        baseElevationMeters,
         next.north,
         current.east,
-        heightMeters,
+        baseElevationMeters + heightMeters,
         current.north,
         next.east,
-        heightMeters,
+        baseElevationMeters + heightMeters,
         next.north,
       );
 
@@ -528,5 +601,31 @@ export class BuildingMesher {
     const bounds = this.createEmptyBounds();
     this.extendBoundsWithPoints(bounds, points);
     return this.isValidBounds(bounds) ? bounds : null;
+  }
+
+  private resolvePolygonBaseElevation(
+    points: readonly PointMeters[],
+    options: BuildingMesherBuildOptions,
+  ): number {
+    const sampleElevation = options.sampleElevationMeters;
+    if (sampleElevation === undefined || points.length === 0) {
+      return 0;
+    }
+
+    let sampledCount = 0;
+    let sampledSum = 0;
+    for (const point of points) {
+      const sample = sampleElevation(point.east, point.north);
+      if (!Number.isFinite(sample)) {
+        continue;
+      }
+      sampledSum += sample;
+      sampledCount += 1;
+    }
+
+    if (sampledCount === 0) {
+      return 0;
+    }
+    return sampledSum / sampledCount;
   }
 }

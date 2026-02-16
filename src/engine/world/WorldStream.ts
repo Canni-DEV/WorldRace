@@ -1,5 +1,6 @@
 import type { TileDataService } from '../data/TileDataService';
 import type { TerrainKind, TileFetchParams, TileFetchResult } from '../data/Types';
+import type { ElevationService } from '../data/ElevationService';
 import type { SceneComposer } from '../render/SceneComposer';
 import type { TileCoordinate, TileRings, TileSystem } from '../geo/TileSystem';
 import { BuildingMesher } from './BuildingMesher';
@@ -106,6 +107,7 @@ export interface WorldStreamSnapshot {
 interface WorldStreamDependencies {
   readonly tileSystem: TileSystem;
   readonly tileDataService: TileDataService;
+  readonly elevationService: ElevationService;
   readonly topologyRegistry: TopologyRegistry;
   readonly sceneComposer: SceneComposer;
   readonly createTileFetchParams: (tile: TileCoordinate, tileKey: string) => TileFetchParams;
@@ -122,6 +124,7 @@ const defaultConfig: WorldStreamConfig = {
 export class WorldStream {
   private readonly tileSystem: TileSystem;
   private readonly tileDataService: TileDataService;
+  private readonly elevationService: ElevationService;
   private readonly topologyRegistry: TopologyRegistry;
   private readonly sceneComposer: SceneComposer;
   private readonly createTileFetchParams: (tile: TileCoordinate, tileKey: string) => TileFetchParams;
@@ -159,6 +162,7 @@ export class WorldStream {
   ) {
     this.tileSystem = dependencies.tileSystem;
     this.tileDataService = dependencies.tileDataService;
+    this.elevationService = dependencies.elevationService;
     this.topologyRegistry = dependencies.topologyRegistry;
     this.sceneComposer = dependencies.sceneComposer;
     this.createTileFetchParams = dependencies.createTileFetchParams;
@@ -498,13 +502,19 @@ export class WorldStream {
       inflightEntry.abortController = null;
       inflightEntry.cancelReason = 'none';
 
-      const topology = this.topologyRegistry.upsertTile(fetched.data);
+      await this.prepareElevationCoverage(fetched.data.bbox);
+      const tileDataWithElevation = this.applyRoadPointElevations(fetched.data);
+      const topology = this.topologyRegistry.upsertTile(tileDataWithElevation);
       topologyInserted = true;
       const roadBuildResult = await this.buildService.build(topology);
       const buildingBuildStartedAt = performance.now();
-      const buildingMesh = this.buildingMesher.buildTileBuildingMesh(fetched.data);
+      const buildingMesh = this.buildingMesher.buildTileBuildingMesh(tileDataWithElevation, {
+        sampleElevationMeters: (east, north) => this.sampleElevationMeters(east, north),
+      });
       const decorationMesh = this.decorationMesher.buildTileDecorationMesh(fetched.data);
-      const terrainMesh = this.terrainMesher.buildTileTerrainMesh(fetched.data);
+      const terrainMesh = this.terrainMesher.buildTileTerrainMesh(tileDataWithElevation, {
+        sampleElevationMeters: (east, north) => this.sampleElevationMeters(east, north),
+      });
       const buildPostRoadMs = performance.now() - buildingBuildStartedAt;
       this.lastBuildMs = roadBuildResult.buildTimeMs + buildPostRoadMs;
 
@@ -731,6 +741,42 @@ export class WorldStream {
       return true;
     }
     return error instanceof Error && error.name === 'AbortError';
+  }
+
+  private async prepareElevationCoverage(bounds: TileFetchResult['data']['bbox']): Promise<void> {
+    try {
+      await this.elevationService.ensureCoverage(bounds);
+    } catch (error) {
+      console.warn('[WorldStream] DEM coverage fetch failed, using fallback heights.', {
+        error: error instanceof Error ? error.message : 'Unknown DEM error',
+      });
+    }
+  }
+
+  private sampleElevationMeters(east: number, north: number): number {
+    return this.elevationService.sampleElevationMeters({
+      east,
+      north,
+    });
+  }
+
+  private applyRoadPointElevations(data: TileFetchResult['data']): TileFetchResult['data'] {
+    const elevatedRoads = data.roads.map((road) => ({
+      ...road,
+      points: road.points.map((point) => {
+        const globalEast = data.tileOriginGlobalMeters.east + point.east;
+        const globalNorth = data.tileOriginGlobalMeters.north + point.north;
+        return {
+          ...point,
+          elevationMeters: this.sampleElevationMeters(globalEast, globalNorth),
+        };
+      }),
+    }));
+
+    return {
+      ...data,
+      roads: elevatedRoads,
+    };
   }
 
   private countInflightByPhase(phase: 'fetch' | 'build'): number {

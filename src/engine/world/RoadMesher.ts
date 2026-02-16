@@ -7,6 +7,9 @@ import type {
 
 interface RoadMesherConfig {
   readonly roadHeightMeters: number;
+  readonly bridgeDeckOffsetMeters: number;
+  readonly tunnelDepthOffsetMeters: number;
+  readonly layerStepOffsetMeters: number;
   readonly laneWidthMeters: number;
   readonly minRoadWidthMeters: number;
   readonly maxRoadWidthMeters: number;
@@ -38,6 +41,8 @@ interface SurfaceAccumulator {
 interface JunctionBranch {
   readonly nodeId: string;
   readonly nodePoint: TopologyPointMeters;
+  readonly deckOffsetMeters: number;
+  readonly surfaceHeightMeters: number;
   readonly direction: TopologyPointMeters;
   readonly angleRad: number;
   readonly halfWidthMeters: number;
@@ -69,6 +74,9 @@ interface MutableRoadMeshStats {
 
 const defaultConfig: RoadMesherConfig = {
   roadHeightMeters: 0.02,
+  bridgeDeckOffsetMeters: 5.5,
+  tunnelDepthOffsetMeters: 5,
+  layerStepOffsetMeters: 3.2,
   laneWidthMeters: 3.25,
   minRoadWidthMeters: 3,
   maxRoadWidthMeters: 30,
@@ -91,6 +99,12 @@ export class RoadMesher {
   public constructor(config: Partial<RoadMesherConfig> = {}) {
     this.config = {
       roadHeightMeters: config.roadHeightMeters ?? defaultConfig.roadHeightMeters,
+      bridgeDeckOffsetMeters:
+        config.bridgeDeckOffsetMeters ?? defaultConfig.bridgeDeckOffsetMeters,
+      tunnelDepthOffsetMeters:
+        config.tunnelDepthOffsetMeters ?? defaultConfig.tunnelDepthOffsetMeters,
+      layerStepOffsetMeters:
+        config.layerStepOffsetMeters ?? defaultConfig.layerStepOffsetMeters,
       laneWidthMeters: config.laneWidthMeters ?? defaultConfig.laneWidthMeters,
       minRoadWidthMeters: config.minRoadWidthMeters ?? defaultConfig.minRoadWidthMeters,
       maxRoadWidthMeters: config.maxRoadWidthMeters ?? defaultConfig.maxRoadWidthMeters,
@@ -146,6 +160,7 @@ export class RoadMesher {
 
     for (const edge of topology.edges) {
       const resolvedWidth = this.resolveRoadWidth(edge);
+      const deckOffsetMeters = this.resolveEdgeDeckOffset(edge);
       const visualStrip = this.buildOffsetStrip(edge.visualPoints, resolvedWidth, false);
       const collisionStrip = this.buildOffsetStrip(edge.canonicalPoints, resolvedWidth, true);
 
@@ -165,15 +180,15 @@ export class RoadMesher {
         surface.positions,
         surface.uvs,
         surface.indices,
-        this.config.roadHeightMeters,
+        deckOffsetMeters,
       );
       this.appendRibbonCollision(
         collisionStrip,
         collisionPositions,
         collisionIndices,
-        this.config.roadHeightMeters,
+        deckOffsetMeters,
       );
-      this.appendRibbonDebugLines(visualStrip, debugLinePositions, this.config.roadHeightMeters + 0.01);
+      this.appendRibbonDebugLines(visualStrip, debugLinePositions, deckOffsetMeters, 0.01);
     }
 
     const baseSurfaceTriangleCount = this.computeSurfaceTriangleCount(surfaceByKind);
@@ -221,6 +236,30 @@ export class RoadMesher {
     return edge.properties.category === 'path' || edge.properties.pavement === 'unpaved'
       ? 'dirt'
       : 'asphalt';
+  }
+
+  private resolveEdgeDeckOffset(edge: TopologyEdge): number {
+    let offsetMeters = (edge.properties.layer ?? 0) * this.config.layerStepOffsetMeters;
+    if (
+      edge.properties.isBridge ||
+      edge.properties.hasEmbankment ||
+      edge.properties.location === 'overground'
+    ) {
+      offsetMeters += this.config.bridgeDeckOffsetMeters;
+    }
+    if (
+      edge.properties.isTunnel ||
+      edge.properties.hasCutting ||
+      edge.properties.location === 'underground' ||
+      edge.properties.location === 'underwater'
+    ) {
+      offsetMeters -= this.config.tunnelDepthOffsetMeters;
+    }
+    return offsetMeters;
+  }
+
+  private resolveRenderableHeight(point: TopologyPointMeters, deckOffsetMeters: number): number {
+    return (point.elevationMeters ?? 0) + deckOffsetMeters + this.config.roadHeightMeters;
   }
 
   private computeSurfaceTriangleCount(surfaceByKind: Readonly<Record<RoadSurfaceKind, SurfaceAccumulator>>): number {
@@ -317,10 +356,12 @@ export class RoadMesher {
       leftPoints.push({
         east: point.east + offset.east,
         north: point.north + offset.north,
+        elevationMeters: point.elevationMeters,
       });
       rightPoints.push({
         east: point.east - offset.east,
         north: point.north - offset.north,
+        elevationMeters: point.elevationMeters,
       });
     }
 
@@ -390,7 +431,7 @@ export class RoadMesher {
     positions: number[],
     uvs: number[],
     indices: number[],
-    heightMeters: number,
+    deckOffsetMeters: number,
   ): void {
     const baseVertex = Math.floor(positions.length / 3);
     const pointCount = strip.leftPoints.length;
@@ -403,7 +444,9 @@ export class RoadMesher {
         continue;
       }
 
-      positions.push(left.east, heightMeters, left.north, right.east, heightMeters, right.north);
+      const leftHeight = this.resolveRenderableHeight(left, deckOffsetMeters);
+      const rightHeight = this.resolveRenderableHeight(right, deckOffsetMeters);
+      positions.push(left.east, leftHeight, left.north, right.east, rightHeight, right.north);
       const u = length * this.config.uvScale;
       uvs.push(u, 0, u, 1);
     }
@@ -423,7 +466,7 @@ export class RoadMesher {
     strip: StripBuildResult,
     positions: number[],
     indices: number[],
-    heightMeters: number,
+    deckOffsetMeters: number,
   ): void {
     const baseVertex = Math.floor(positions.length / 3);
     const pointCount = strip.leftPoints.length;
@@ -434,7 +477,9 @@ export class RoadMesher {
       if (left === undefined || right === undefined) {
         continue;
       }
-      positions.push(left.east, heightMeters, left.north, right.east, heightMeters, right.north);
+      const leftHeight = this.resolveRenderableHeight(left, deckOffsetMeters);
+      const rightHeight = this.resolveRenderableHeight(right, deckOffsetMeters);
+      positions.push(left.east, leftHeight, left.north, right.east, rightHeight, right.north);
     }
 
     for (let index = 0; index < pointCount - 1; index += 1) {
@@ -456,20 +501,41 @@ export class RoadMesher {
     debugLinePositions: number[],
     stats: MutableRoadMeshStats,
   ): void {
+    const nodeElevationById = new Map<string, { sum: number; count: number }>();
+    for (const edge of topology.edges) {
+      this.accumulateNodeElevation(
+        nodeElevationById,
+        edge.fromNodeId,
+        this.resolveEdgeEndpointElevation(edge, true),
+      );
+      this.accumulateNodeElevation(
+        nodeElevationById,
+        edge.toNodeId,
+        this.resolveEdgeEndpointElevation(edge, false),
+      );
+    }
+
     const nodePointById = new Map<string, TopologyPointMeters>();
     for (const node of topology.nodes) {
-      nodePointById.set(node.globalNodeId, { east: node.east, north: node.north });
+      const nodeElevation = this.resolveNodeElevation(nodeElevationById, node.globalNodeId);
+      nodePointById.set(node.globalNodeId, {
+        east: node.east,
+        north: node.north,
+        elevationMeters: nodeElevation,
+      });
     }
 
     const branchMap = new Map<string, JunctionBranch[]>();
     for (const edge of topology.edges) {
       const halfWidth = this.resolveRoadWidth(edge) * 0.5;
       const surfaceKind = this.resolveEdgeSurfaceKind(edge);
+      const deckOffsetMeters = this.resolveEdgeDeckOffset(edge);
       this.appendBranchForEdgeEndpoint(
         edge,
         edge.fromNodeId,
         true,
         halfWidth,
+        deckOffsetMeters,
         surfaceKind,
         nodePointById,
         branchMap,
@@ -479,6 +545,7 @@ export class RoadMesher {
         edge.toNodeId,
         false,
         halfWidth,
+        deckOffsetMeters,
         surfaceKind,
         nodePointById,
         branchMap,
@@ -539,7 +606,7 @@ export class RoadMesher {
         surface.positions,
         surface.uvs,
         surface.indices,
-        this.config.roadHeightMeters + this.config.junctionHeightOffsetMeters,
+        this.config.junctionHeightOffsetMeters,
       );
       if (surfaceTriangles <= 0) {
         stats.junctionTriangulationFailures += 1;
@@ -550,12 +617,11 @@ export class RoadMesher {
         polygon,
         collisionPositions,
         collisionIndices,
-        this.config.roadHeightMeters,
       );
       this.appendClosedPolylineDebugLines(
         polygon,
         debugLinePositions,
-        this.config.roadHeightMeters + this.config.junctionHeightOffsetMeters + 0.01,
+        this.config.junctionHeightOffsetMeters + 0.01,
       );
       stats.junctionPolygonsBuilt += 1;
     }
@@ -566,6 +632,7 @@ export class RoadMesher {
     nodeId: string,
     atStart: boolean,
     halfWidthMeters: number,
+    deckOffsetMeters: number,
     surfaceKind: RoadSurfaceKind,
     nodePointById: ReadonlyMap<string, TopologyPointMeters>,
     branchMap: Map<string, JunctionBranch[]>,
@@ -586,9 +653,12 @@ export class RoadMesher {
       east: -direction.north,
       north: direction.east,
     };
+    const surfaceHeightMeters = this.resolveRenderableHeight(nodePoint, deckOffsetMeters);
     const branch: JunctionBranch = {
       nodeId,
       nodePoint,
+      deckOffsetMeters,
+      surfaceHeightMeters,
       direction,
       angleRad: Math.atan2(direction.north, direction.east),
       halfWidthMeters,
@@ -596,10 +666,12 @@ export class RoadMesher {
       leftPoint: {
         east: nodePoint.east + normal.east * halfWidthMeters,
         north: nodePoint.north + normal.north * halfWidthMeters,
+        elevationMeters: surfaceHeightMeters,
       },
       rightPoint: {
         east: nodePoint.east - normal.east * halfWidthMeters,
         north: nodePoint.north - normal.north * halfWidthMeters,
+        elevationMeters: surfaceHeightMeters,
       },
     };
 
@@ -613,6 +685,49 @@ export class RoadMesher {
 
   private resolveJunctionSurfaceKind(branches: readonly JunctionBranch[]): RoadSurfaceKind {
     return branches.every((branch) => branch.surfaceKind === 'dirt') ? 'dirt' : 'asphalt';
+  }
+
+  private resolveEdgeEndpointElevation(edge: TopologyEdge, atStart: boolean): number {
+    const pointFromVisual = atStart
+      ? edge.visualPoints[0]
+      : edge.visualPoints[edge.visualPoints.length - 1];
+    const pointFromCanonical = atStart
+      ? edge.canonicalPoints[0]
+      : edge.canonicalPoints[edge.canonicalPoints.length - 1];
+    const sourcePoint = pointFromVisual ?? pointFromCanonical;
+    const deckOffsetMeters = this.resolveEdgeDeckOffset(edge);
+    if (sourcePoint === undefined) {
+      return this.config.roadHeightMeters + deckOffsetMeters;
+    }
+    return this.resolveRenderableHeight(sourcePoint, deckOffsetMeters);
+  }
+
+  private accumulateNodeElevation(
+    bucket: Map<string, { sum: number; count: number }>,
+    nodeId: string,
+    elevationMeters: number,
+  ): void {
+    const existing = bucket.get(nodeId);
+    if (existing === undefined) {
+      bucket.set(nodeId, {
+        sum: elevationMeters,
+        count: 1,
+      });
+      return;
+    }
+    existing.sum += elevationMeters;
+    existing.count += 1;
+  }
+
+  private resolveNodeElevation(
+    bucket: ReadonlyMap<string, { readonly sum: number; readonly count: number }>,
+    nodeId: string,
+  ): number | undefined {
+    const sample = bucket.get(nodeId);
+    if (sample === undefined || sample.count <= 0) {
+      return undefined;
+    }
+    return sample.sum / sample.count;
   }
 
   private extractDirectionFromPolyline(
@@ -705,6 +820,7 @@ export class RoadMesher {
       {
         east: branch.nodePoint.east + outward.east * pocketRadius,
         north: branch.nodePoint.north + outward.north * pocketRadius,
+        elevationMeters: (branch.surfaceHeightMeters + nextBranch.surfaceHeightMeters) * 0.5,
       },
       branch.leftPoint,
       nextBranch.rightPoint,
@@ -769,11 +885,12 @@ export class RoadMesher {
     positions: number[],
     uvs: number[],
     indices: number[],
-    heightMeters: number,
+    heightOffsetMeters: number,
   ): number {
     const baseVertex = Math.floor(positions.length / 3);
     for (const point of polygon) {
-      positions.push(point.east, heightMeters, point.north);
+      const pointHeightMeters = (point.elevationMeters ?? 0) + heightOffsetMeters;
+      positions.push(point.east, pointHeightMeters, point.north);
       uvs.push(point.east * this.config.uvScale, point.north * this.config.uvScale);
     }
 
@@ -788,11 +905,10 @@ export class RoadMesher {
     polygon: readonly TopologyPointMeters[],
     positions: number[],
     indices: number[],
-    heightMeters: number,
   ): void {
     const baseVertex = Math.floor(positions.length / 3);
     for (const point of polygon) {
-      positions.push(point.east, heightMeters, point.north);
+      positions.push(point.east, point.elevationMeters ?? 0, point.north);
     }
 
     for (let index = 1; index < polygon.length - 1; index += 1) {
@@ -803,7 +919,7 @@ export class RoadMesher {
   private appendClosedPolylineDebugLines(
     points: readonly TopologyPointMeters[],
     linePositions: number[],
-    heightMeters: number,
+    heightOffsetMeters: number,
   ): void {
     if (points.length < 2) {
       return;
@@ -817,10 +933,10 @@ export class RoadMesher {
       }
       linePositions.push(
         current.east,
-        heightMeters,
+        (current.elevationMeters ?? 0) + heightOffsetMeters,
         current.north,
         next.east,
-        heightMeters,
+        (next.elevationMeters ?? 0) + heightOffsetMeters,
         next.north,
       );
     }
@@ -902,7 +1018,8 @@ export class RoadMesher {
   private appendRibbonDebugLines(
     strip: StripBuildResult,
     linePositions: number[],
-    heightMeters: number,
+    deckOffsetMeters: number,
+    debugOffsetMeters: number,
   ): void {
     for (let index = 0; index < strip.leftPoints.length - 1; index += 1) {
       const leftCurrent = strip.leftPoints[index];
@@ -920,38 +1037,49 @@ export class RoadMesher {
 
       const centerCurrent = this.midpoint(leftCurrent, rightCurrent);
       const centerNext = this.midpoint(leftNext, rightNext);
+      const centerCurrentHeight = this.resolveRenderableHeight(centerCurrent, deckOffsetMeters) + debugOffsetMeters;
+      const centerNextHeight = this.resolveRenderableHeight(centerNext, deckOffsetMeters) + debugOffsetMeters;
+      const leftCurrentHeight = this.resolveRenderableHeight(leftCurrent, deckOffsetMeters) + debugOffsetMeters;
+      const leftNextHeight = this.resolveRenderableHeight(leftNext, deckOffsetMeters) + debugOffsetMeters;
+      const rightCurrentHeight = this.resolveRenderableHeight(rightCurrent, deckOffsetMeters) + debugOffsetMeters;
+      const rightNextHeight = this.resolveRenderableHeight(rightNext, deckOffsetMeters) + debugOffsetMeters;
 
       linePositions.push(
         centerCurrent.east,
-        heightMeters,
+        centerCurrentHeight,
         centerCurrent.north,
         centerNext.east,
-        heightMeters,
+        centerNextHeight,
         centerNext.north,
       );
       linePositions.push(
         leftCurrent.east,
-        heightMeters,
+        leftCurrentHeight,
         leftCurrent.north,
         leftNext.east,
-        heightMeters,
+        leftNextHeight,
         leftNext.north,
       );
       linePositions.push(
         rightCurrent.east,
-        heightMeters,
+        rightCurrentHeight,
         rightCurrent.north,
         rightNext.east,
-        heightMeters,
+        rightNextHeight,
         rightNext.north,
       );
     }
   }
 
   private midpoint(pointA: TopologyPointMeters, pointB: TopologyPointMeters): TopologyPointMeters {
+    const midpointElevation =
+      pointA.elevationMeters !== undefined && pointB.elevationMeters !== undefined
+        ? (pointA.elevationMeters + pointB.elevationMeters) * 0.5
+        : pointA.elevationMeters ?? pointB.elevationMeters;
     return {
       east: (pointA.east + pointB.east) * 0.5,
       north: (pointA.north + pointB.north) * 0.5,
+      elevationMeters: midpointElevation,
     };
   }
 
@@ -1001,9 +1129,14 @@ export class RoadMesher {
       north: pointB.north - pointA.north,
     };
     const t = this.cross(delta, directionB) / denominator;
+    const intersectionElevation =
+      pointA.elevationMeters !== undefined && pointB.elevationMeters !== undefined
+        ? (pointA.elevationMeters + pointB.elevationMeters) * 0.5
+        : pointA.elevationMeters ?? pointB.elevationMeters;
     return {
       east: pointA.east + directionA.east * t,
       north: pointA.north + directionA.north * t,
+      elevationMeters: intersectionElevation,
     };
   }
 

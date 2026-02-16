@@ -3,6 +3,7 @@ import type { RoadProperties, TileOSMData } from '../data/Types';
 export interface TopologyPointMeters {
   readonly east: number;
   readonly north: number;
+  readonly elevationMeters?: number;
 }
 
 export interface TopologyNodeLocal {

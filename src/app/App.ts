@@ -1,5 +1,6 @@
 import { Clock } from '../engine/core/Clock';
 import { runtimeConfig } from '../engine/core/Config';
+import { ElevationService } from '../engine/data/ElevationService';
 import { TileDataService } from '../engine/data/TileDataService';
 import { Projection } from '../engine/geo/Projection';
 import { TileSystem } from '../engine/geo/TileSystem';
@@ -127,6 +128,16 @@ export class App {
         cacheTtlMs: runtimeConfig.cacheTtlMs,
       },
     );
+    const elevationService = new ElevationService(
+      new Projection(projectionOrigin, projectionAxes),
+      {
+        enabled: runtimeConfig.demEnabled,
+        zoom: runtimeConfig.demZoom,
+        endpointTemplate: runtimeConfig.demEndpointTemplate,
+        maxCachedTiles: runtimeConfig.demMaxCachedTiles,
+        fallbackMeters: runtimeConfig.demFallbackMeters,
+      },
+    );
     const topologyRegistry = new TopologyRegistry({
       routeWeightingProfile: runtimeConfig.routeWeightingProfile,
     });
@@ -141,6 +152,7 @@ export class App {
       {
         tileSystem: this.tileSystem,
         tileDataService: this.tileDataService,
+        elevationService,
         topologyRegistry,
         sceneComposer: this.sceneComposer,
         createTileFetchParams: (tile, tileKey) => this.createTileFetchParams(tile, tileKey),
