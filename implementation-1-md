@@ -263,7 +263,7 @@
 
 ### PR-13: Terrain base layer (simplified world ground)
 **Goal:** add a solid terrain floor per tile so roads/buildings/decoration sit on top of a readable world context.
-**Status:** implemented locally for Phases A+B (build validation blocked by local Rollup optional dependency issue).
+**Status:** implemented locally for Phases A+B+C (build validation blocked by local Rollup optional dependency issue).
 
 **Checklist**
 - [x] Extend OSM fetch coverage for basic terrain classes (`water`, `urban`, `green`).
@@ -279,7 +279,7 @@
 **Phases**
 - [x] **Fase A (rápida, 1 PR):** tipo dominante por tile + plano sólido + colores.
 - [x] **Fase B:** mejorar cobertura (clipping parcial de polígonos en borde de tile).
-- [ ] **Fase C (opcional):** mosaico más fino dentro del tile (subceldas 16x16) para transiciones locales.
+- [x] **Fase C (opcional):** mosaico más fino dentro del tile (subceldas 16x16) para transiciones locales.
 
 **Acceptance**
 - [ ] Every loaded tile renders a stable ground plane under roads/buildings.

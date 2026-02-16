@@ -527,6 +527,10 @@ export class WorldStream {
         (total, instanceGroup) => total + instanceGroup.transforms.byteLength,
         0,
       );
+      const terrainBytes = terrainMesh.kindChunks.reduce(
+        (total, chunk) => total + chunk.positions.byteLength + chunk.indices.byteLength,
+        0,
+      );
       const decorationInstanceCount = decorationMesh.stats.totalInstances;
       const approxMeshBytes =
         roadBuildResult.payload.surfacePositions.byteLength +
@@ -539,8 +543,7 @@ export class WorldStream {
         buildingMesh.lod0Indices.byteLength +
         buildingMesh.lod1Positions.byteLength +
         buildingMesh.lod1Indices.byteLength +
-        terrainMesh.positions.byteLength +
-        terrainMesh.indices.byteLength +
+        terrainBytes +
         decorationBytes;
 
       this.approxMeshBytes += approxMeshBytes;

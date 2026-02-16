@@ -36,7 +36,13 @@ import type { TerrainTileMeshPayload } from '../world/TerrainMeshTypes';
 interface TerrainTileBundle {
   readonly tileKey: string;
   readonly group: Group;
+  readonly kindBundles: readonly TerrainKindBundle[];
+}
+
+interface TerrainKindBundle {
+  readonly kind: TerrainKind;
   readonly geometry: BufferGeometry;
+  readonly mesh: Mesh;
 }
 
 interface RoadTileBundle {
@@ -264,26 +270,41 @@ export class SceneComposer {
 
   public upsertTerrainTileMesh(tileMesh: TerrainTileMeshPayload): void {
     this.removeTerrainTileMesh(tileMesh.tileKey);
-    if (tileMesh.positions.length === 0 || tileMesh.indices.length === 0) {
+    if (tileMesh.kindChunks.length === 0) {
       return;
     }
 
-    const geometry = this.createIndexedGeometry(tileMesh.positions, tileMesh.indices);
-    const material = this.terrainMaterialByKind[tileMesh.dominantKind];
-    const surfaceMesh = new Mesh(geometry, material);
-    surfaceMesh.name = 'terrain-surface';
-    surfaceMesh.castShadow = false;
-    surfaceMesh.receiveShadow = true;
-
     const group = new Group();
     group.name = `terrain-tile:${tileMesh.tileKey}`;
-    group.add(surfaceMesh);
+    const kindBundles: TerrainKindBundle[] = [];
+    for (const kindChunk of tileMesh.kindChunks) {
+      if (kindChunk.positions.length === 0 || kindChunk.indices.length === 0) {
+        continue;
+      }
+
+      const geometry = this.createIndexedGeometry(kindChunk.positions, kindChunk.indices);
+      const material = this.terrainMaterialByKind[kindChunk.kind];
+      const surfaceMesh = new Mesh(geometry, material);
+      surfaceMesh.name = `terrain-surface-${kindChunk.kind}`;
+      surfaceMesh.castShadow = false;
+      surfaceMesh.receiveShadow = true;
+      group.add(surfaceMesh);
+      kindBundles.push({
+        kind: kindChunk.kind,
+        geometry,
+        mesh: surfaceMesh,
+      });
+    }
+
+    if (kindBundles.length === 0) {
+      return;
+    }
 
     this.terrainRoot.add(group);
     this.terrainTileBundles.set(tileMesh.tileKey, {
       tileKey: tileMesh.tileKey,
       group,
-      geometry,
+      kindBundles,
     });
   }
 
@@ -513,7 +534,9 @@ export class SceneComposer {
 
     this.terrainTileBundles.delete(tileKey);
     this.terrainRoot.remove(bundle.group);
-    bundle.geometry.dispose();
+    for (const kindBundle of bundle.kindBundles) {
+      kindBundle.geometry.dispose();
+    }
   }
 
   public removeRoadTileMesh(tileKey: string): void {

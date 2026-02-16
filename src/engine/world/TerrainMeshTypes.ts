@@ -1,5 +1,11 @@
 import type { TerrainKind, TileTerrainCoverage } from '../data/Types';
 
+export interface TerrainKindMeshChunk {
+  readonly kind: TerrainKind;
+  readonly positions: Float32Array;
+  readonly indices: Uint32Array;
+}
+
 export interface TerrainTileMeshPayload {
   readonly tileKey: string;
   readonly tileCenter: {
@@ -8,6 +14,6 @@ export interface TerrainTileMeshPayload {
   };
   readonly dominantKind: TerrainKind;
   readonly coverage: TileTerrainCoverage;
-  readonly positions: Float32Array;
-  readonly indices: Uint32Array;
+  readonly mosaicResolution: number;
+  readonly kindChunks: readonly TerrainKindMeshChunk[];
 }
