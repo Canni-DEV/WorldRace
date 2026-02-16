@@ -261,20 +261,26 @@ export class OverpassClient {
   way["natural"~"^(wood|scrub)$"](${bbox});
   way["leisure"="park"](${bbox});
   way["natural"~"^(water|wetland)$"](${bbox});
-  way["waterway"="riverbank"](${bbox});
-  way["landuse"~"^(reservoir|residential|commercial|industrial|retail|forest|farmland|meadow|grass)$"](${bbox});
+  way["water"](${bbox});
+  way["waterway"~"^(riverbank|dock)$"](${bbox});
+  way["landuse"~"^(reservoir|basin|residential|commercial|industrial|retail|forest|farmland|meadow|grass)$"](${bbox});
   way["natural"~"^(wood|scrub|grassland)$"](${bbox});
   way["leisure"~"^(park|garden|golf_course)$"](${bbox});
   relation["landuse"="forest"](${bbox});
   relation["natural"~"^(wood|scrub)$"](${bbox});
   relation["leisure"="park"](${bbox});
   relation["natural"~"^(water|wetland)$"](${bbox});
-  relation["waterway"="riverbank"](${bbox});
-  relation["landuse"~"^(reservoir|residential|commercial|industrial|retail|forest|farmland|meadow|grass)$"](${bbox});
+  relation["water"](${bbox});
+  relation["waterway"~"^(riverbank|dock)$"](${bbox});
+  relation["landuse"~"^(reservoir|basin|residential|commercial|industrial|retail|forest|farmland|meadow|grass)$"](${bbox});
   relation["natural"~"^(wood|scrub|grassland)$"](${bbox});
   relation["leisure"~"^(park|garden|golf_course)$"](${bbox});
+)->.base;
+(
+  .base;
+  way(r.base);
 );
-out geom tags;`;
+out body geom;`;
   }
 
   private pickEndpoint(): { readonly endpoint: string; readonly index: number } {

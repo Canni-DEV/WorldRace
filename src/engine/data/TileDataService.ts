@@ -30,7 +30,7 @@ import type {
 } from './Types';
 
 const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v10';
-const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-decoration-terrain-meta-v7';
+const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-decoration-terrain-meta-v10';
 const META_TILE_SCHEMA_VERSION = 'meta-tile-v7';
 const STATS_REFRESH_INTERVAL_MS = 2500;
 const POLYGON_POINT_EPSILON_METERS = 0.01;
@@ -185,7 +185,7 @@ const defaultServiceConfig: TileDataServiceConfig = {
   staleWhileRevalidate: true,
   cacheTtlMs: defaultCachePolicyConfig.ttlMs,
   metaTileSpan: 2,
-  metaTilePaddingMeters: 50,
+  metaTilePaddingMeters: 140,
   selectionPaddingMeters: 3,
   suspectEmptyRoadThreshold: 2,
   suspectNeighborRoadThreshold: 12,
@@ -1337,12 +1337,19 @@ export class TileDataService {
     const natural = tags.natural?.trim().toLowerCase();
     const leisure = tags.leisure?.trim().toLowerCase();
     const waterway = tags.waterway?.trim().toLowerCase();
+    const water = tags.water?.trim().toLowerCase();
+    const manMade = tags.man_made?.trim().toLowerCase();
 
     if (
       natural === 'water' ||
       natural === 'wetland' ||
+      natural === 'bay' ||
       waterway === 'riverbank' ||
-      landuse === 'reservoir'
+      waterway === 'dock' ||
+      landuse === 'reservoir' ||
+      landuse === 'basin' ||
+      manMade === 'basin' ||
+      (water !== undefined && water.length > 0 && water !== 'no')
     ) {
       return 'water';
     }
@@ -1387,7 +1394,8 @@ export class TileDataService {
       }
 
       const role = member.role.trim().toLowerCase();
-      if (role !== 'outer' && role !== 'inner') {
+      const normalizedRole = role.length === 0 ? 'outer' : role;
+      if (normalizedRole !== 'outer' && normalizedRole !== 'inner') {
         continue;
       }
 
@@ -1401,7 +1409,7 @@ export class TileDataService {
         continue;
       }
 
-      if (role === 'outer') {
+      if (normalizedRole === 'outer') {
         outerSegments.push(segment);
       } else {
         holeSegments.push(segment);
@@ -1456,7 +1464,8 @@ export class TileDataService {
       }
 
       const role = member.role.trim().toLowerCase();
-      if (role !== 'outer' && role !== 'inner') {
+      const normalizedRole = role.length === 0 ? 'outer' : role;
+      if (normalizedRole !== 'outer' && normalizedRole !== 'inner') {
         continue;
       }
       wayIds.push(member.ref);
@@ -1476,8 +1485,12 @@ export class TileDataService {
 
     const first = compact[0];
     const last = compact[compact.length - 1];
-    if (first !== undefined && last !== undefined && this.pointsNear(first, last, POLYGON_POINT_EPSILON_METERS)) {
-      compact.pop();
+    if (
+      first !== undefined &&
+      last !== undefined &&
+      this.pointsNear(first, last, POLYGON_POINT_EPSILON_METERS)
+    ) {
+      return compact.length >= 4 ? compact : null;
     }
 
     return compact.length >= 2 ? compact : null;
