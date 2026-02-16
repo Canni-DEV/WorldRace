@@ -16,6 +16,8 @@ import type {
   DecorationPointKind,
   GeoBoundsLatLon,
   PointMeters,
+  RoadCategory,
+  RoadPavementKind,
   RoadFeature,
   TerrainAreaFeature,
   TerrainKind,
@@ -28,7 +30,7 @@ import type {
 } from './Types';
 
 const NORMALIZED_SCHEMA_VERSION = 'tile-osm-v10';
-const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-decoration-terrain-meta-v5';
+const OVERPASS_SOURCE_VERSION = 'overpass-roads-buildings-decoration-terrain-meta-v7';
 const META_TILE_SCHEMA_VERSION = 'meta-tile-v7';
 const STATS_REFRESH_INTERVAL_MS = 2500;
 const POLYGON_POINT_EPSILON_METERS = 0.01;
@@ -38,6 +40,40 @@ const TERRAIN_WATER_DOMINANT_COVERAGE = 0.35;
 const TERRAIN_URBAN_DOMINANT_COVERAGE = 0.3;
 const TERRAIN_URBAN_BUILDING_COUNT_THRESHOLD = 4;
 const TERRAIN_URBAN_ROAD_COUNT_THRESHOLD = 6;
+const PAVED_SURFACE_TAGS = new Set<string>([
+  'asphalt',
+  'concrete',
+  'concrete:lanes',
+  'concrete:plates',
+  'paving_stones',
+  'sett',
+  'cobblestone',
+  'chipseal',
+  'metal',
+  'wood',
+  'rubber',
+  'paved',
+]);
+const UNPAVED_SURFACE_TAGS = new Set<string>([
+  'unpaved',
+  'compacted',
+  'fine_gravel',
+  'gravel',
+  'pebblestone',
+  'rock',
+  'dirt',
+  'earth',
+  'ground',
+  'grass',
+  'sand',
+  'mud',
+  'clay',
+  'woodchips',
+  'snow',
+  'ice',
+]);
+const PAVED_TRACKTYPE_TAGS = new Set<string>(['grade1']);
+const UNPAVED_TRACKTYPE_TAGS = new Set<string>(['grade2', 'grade3', 'grade4', 'grade5']);
 
 type OverpassWayElement = Extract<OverpassResponse['elements'][number], { type: 'way' }>;
 type OverpassRelationElement = Extract<OverpassResponse['elements'][number], { type: 'relation' }>;
@@ -560,13 +596,7 @@ export class TileDataService {
         roads.push({
           id: `way/${way.id}`,
           globalPoints: geometry,
-          properties: {
-            highway: way.tags?.highway ?? 'unclassified',
-            widthMeters: this.parseWidthMeters(way.tags?.width ?? null),
-            lanes: this.parsePositiveInteger(way.tags?.lanes ?? null),
-            oneway: this.parseOnewayTag(way.tags?.oneway ?? null),
-            maxspeed: way.tags?.maxspeed ?? null,
-          },
+          properties: this.parseRoadProperties(way.tags),
         });
       }
 
@@ -1114,7 +1144,7 @@ export class TileDataService {
   }
 
   private isRoadWay(way: OverpassWayElement): boolean {
-    return typeof way.tags?.highway === 'string';
+    return this.parseTagString(way.tags?.highway ?? null) !== null;
   }
 
   private isBuildingWay(way: OverpassWayElement): boolean {
@@ -1134,6 +1164,115 @@ export class TileDataService {
       heightMeters: this.parseHeightMeters(tags?.height ?? null),
       roofShape: this.parseRoofShape(tags?.['roof:shape'] ?? null),
     };
+  }
+
+  private parseRoadProperties(tags: Record<string, string> | undefined): RoadFeature['properties'] {
+    const highway = this.parseHighwayTag(tags?.highway ?? null);
+    const category = this.classifyRoadCategory(highway, tags);
+    const surface = this.parseSurfaceTag(tags?.surface ?? null);
+    const tracktype = this.parseNormalizedTag(tags?.tracktype ?? null);
+    return {
+      highway,
+      category,
+      surface,
+      tracktype,
+      pavement: this.resolveRoadPavementKind(highway, category, surface, tracktype),
+      widthMeters: this.parseWidthMeters(tags?.width ?? null),
+      lanes: this.parsePositiveInteger(tags?.lanes ?? null),
+      oneway: this.parseOnewayTag(tags?.oneway ?? null),
+      maxspeed: this.parseTagString(tags?.maxspeed ?? null),
+    };
+  }
+
+  private parseHighwayTag(value: string | null): string {
+    return this.parseNormalizedTag(value) ?? 'unclassified';
+  }
+
+  private parseSurfaceTag(value: string | null): string | null {
+    const normalized = this.parseNormalizedTag(value);
+    if (normalized === null) {
+      return null;
+    }
+
+    const firstToken = normalized.split(';')[0]?.trim() ?? normalized;
+    return firstToken.length === 0 ? null : firstToken;
+  }
+
+  private resolveRoadPavementKind(
+    highway: string,
+    category: RoadCategory,
+    surface: string | null,
+    tracktype: string | null,
+  ): RoadPavementKind {
+    if (surface !== null) {
+      if (PAVED_SURFACE_TAGS.has(surface)) {
+        return 'paved';
+      }
+
+      if (UNPAVED_SURFACE_TAGS.has(surface)) {
+        return 'unpaved';
+      }
+    }
+
+    if (tracktype !== null) {
+      if (PAVED_TRACKTYPE_TAGS.has(tracktype)) {
+        return 'paved';
+      }
+
+      if (UNPAVED_TRACKTYPE_TAGS.has(tracktype)) {
+        return 'unpaved';
+      }
+    }
+
+    if (category === 'path' || highway === 'track') {
+      return 'unpaved';
+    }
+
+    return 'unknown';
+  }
+
+  private classifyRoadCategory(highway: string, tags: Record<string, string> | undefined): RoadCategory {
+    switch (highway) {
+      case 'motorway':
+      case 'motorway_link':
+      case 'trunk':
+      case 'trunk_link':
+        return 'highway';
+      case 'primary':
+      case 'primary_link':
+      case 'secondary':
+      case 'secondary_link':
+        return this.hasRouteReference(tags) ? 'route' : 'avenue';
+      case 'tertiary':
+      case 'tertiary_link':
+      case 'residential':
+      case 'living_street':
+      case 'unclassified':
+      case 'road':
+        return 'street';
+      case 'service':
+        return 'service';
+      case 'track':
+      case 'footway':
+      case 'path':
+      case 'pedestrian':
+      case 'cycleway':
+      case 'bridleway':
+      case 'steps':
+      case 'corridor':
+        return 'path';
+      default:
+        return 'other';
+    }
+  }
+
+  private hasRouteReference(tags: Record<string, string> | undefined): boolean {
+    const routeReference =
+      this.parseTagString(tags?.ref ?? null) ??
+      this.parseTagString(tags?.nat_ref ?? null) ??
+      this.parseTagString(tags?.official_ref ?? null) ??
+      this.parseTagString(tags?.int_ref ?? null);
+    return routeReference !== null;
   }
 
   private parseDecorationPointKind(tags: Record<string, string> | undefined): DecorationPointKind | null {
@@ -1848,6 +1987,20 @@ export class TileDataService {
     }
 
     return parsed;
+  }
+
+  private parseTagString(value: string | null): string | null {
+    if (value === null) {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    return trimmed.length === 0 ? null : trimmed;
+  }
+
+  private parseNormalizedTag(value: string | null): string | null {
+    const parsed = this.parseTagString(value);
+    return parsed === null ? null : parsed.toLowerCase();
   }
 
   private clamp01(value: number): number {

@@ -30,7 +30,7 @@ import type {
   DecorationPropKind,
   DecorationTileMeshPayload,
 } from '../world/DecorationMeshTypes';
-import type { RoadTileMeshPayload } from '../world/RoadMeshTypes';
+import type { RoadSurfaceKind, RoadTileMeshPayload } from '../world/RoadMeshTypes';
 import type { TerrainTileMeshPayload } from '../world/TerrainMeshTypes';
 
 interface TerrainTileBundle {
@@ -48,7 +48,7 @@ interface TerrainKindBundle {
 interface RoadTileBundle {
   readonly tileKey: string;
   readonly group: Group;
-  readonly surfaceGeometry: BufferGeometry;
+  readonly surfaceGeometries: readonly BufferGeometry[];
   readonly collisionGeometry: BufferGeometry;
   readonly debugLineGeometry: BufferGeometry;
 }
@@ -119,6 +119,14 @@ export class SceneComposer {
     color: 0x2c313a,
     roughness: 0.95,
     metalness: 0.02,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  private readonly roadDirtSurfaceMaterial = new MeshStandardMaterial({
+    color: 0x8b5e34,
+    roughness: 0.98,
+    metalness: 0.01,
     polygonOffset: true,
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,
@@ -261,7 +269,7 @@ export class SceneComposer {
           continue;
         }
 
-        if (child.name === 'road-wireframe' || child.name === 'road-debug-lines') {
+        if (child.name.startsWith('road-wireframe') || child.name === 'road-debug-lines') {
           child.visible = enabled;
         }
       }
@@ -310,29 +318,15 @@ export class SceneComposer {
 
   public upsertRoadTileMesh(tileMesh: RoadTileMeshPayload): void {
     this.removeRoadTileMesh(tileMesh.tileKey);
-    if (tileMesh.surfacePositions.length === 0 || tileMesh.surfaceIndices.length === 0) {
+    if (tileMesh.surfaceChunks.length === 0) {
       return;
     }
 
-    const surfaceGeometry = this.createRoadSurfaceGeometry(
-      tileMesh.surfacePositions,
-      tileMesh.surfaceIndices,
-      tileMesh.surfaceUvs,
-    );
     const collisionGeometry = this.createCollisionGeometry(
       tileMesh.collisionPositions,
       tileMesh.collisionIndices,
     );
     const debugLineGeometry = this.createLineGeometry(tileMesh.debugLinePositions);
-
-    const surfaceMesh = new Mesh(surfaceGeometry, this.roadSurfaceMaterial);
-    surfaceMesh.name = 'road-surface';
-    surfaceMesh.castShadow = false;
-    surfaceMesh.receiveShadow = true;
-
-    const wireframeMesh = new Mesh(surfaceGeometry, this.roadWireframeMaterial);
-    wireframeMesh.name = 'road-wireframe';
-    wireframeMesh.visible = this.roadDebugVisible;
 
     const collisionMesh = new Mesh(collisionGeometry, this.roadCollisionMaterial);
     collisionMesh.name = 'road-collision';
@@ -344,13 +338,45 @@ export class SceneComposer {
 
     const group = new Group();
     group.name = `road-tile:${tileMesh.tileKey}`;
-    group.add(surfaceMesh, wireframeMesh, collisionMesh, debugLines);
+    const surfaceGeometries: BufferGeometry[] = [];
+    for (const chunk of tileMesh.surfaceChunks) {
+      if (chunk.positions.length === 0 || chunk.indices.length === 0) {
+        continue;
+      }
+
+      const surfaceGeometry = this.createRoadSurfaceGeometry(
+        chunk.positions,
+        chunk.indices,
+        chunk.uvs,
+      );
+      surfaceGeometries.push(surfaceGeometry);
+      const chunkSuffix = chunk.kind === 'asphalt' ? 'asphalt' : 'dirt';
+      const surfaceMaterial = this.getRoadSurfaceMaterial(chunk.kind);
+
+      const surfaceMesh = new Mesh(surfaceGeometry, surfaceMaterial);
+      surfaceMesh.name = `road-surface-${chunkSuffix}`;
+      surfaceMesh.castShadow = false;
+      surfaceMesh.receiveShadow = true;
+
+      const wireframeMesh = new Mesh(surfaceGeometry, this.roadWireframeMaterial);
+      wireframeMesh.name = `road-wireframe-${chunkSuffix}`;
+      wireframeMesh.visible = this.roadDebugVisible;
+      group.add(surfaceMesh, wireframeMesh);
+    }
+
+    if (surfaceGeometries.length === 0) {
+      collisionGeometry.dispose();
+      debugLineGeometry.dispose();
+      return;
+    }
+
+    group.add(collisionMesh, debugLines);
 
     this.roadRoot.add(group);
     this.roadTileBundles.set(tileMesh.tileKey, {
       tileKey: tileMesh.tileKey,
       group,
-      surfaceGeometry,
+      surfaceGeometries,
       collisionGeometry,
       debugLineGeometry,
     });
@@ -484,6 +510,7 @@ export class SceneComposer {
     this.activeMaterial.dispose();
     this.currentTileMaterial.dispose();
     this.roadSurfaceMaterial.dispose();
+    this.roadDirtSurfaceMaterial.dispose();
     this.roadWireframeMaterial.dispose();
     this.roadCollisionMaterial.dispose();
     this.roadDebugLineMaterial.dispose();
@@ -547,7 +574,9 @@ export class SceneComposer {
 
     this.roadTileBundles.delete(tileKey);
     this.roadRoot.remove(bundle.group);
-    bundle.surfaceGeometry.dispose();
+    for (const surfaceGeometry of bundle.surfaceGeometries) {
+      surfaceGeometry.dispose();
+    }
     bundle.collisionGeometry.dispose();
     bundle.debugLineGeometry.dispose();
   }
@@ -598,6 +627,10 @@ export class SceneComposer {
       }
     }
     return instanceCount;
+  }
+
+  private getRoadSurfaceMaterial(kind: RoadSurfaceKind): MeshStandardMaterial {
+    return kind === 'dirt' ? this.roadDirtSurfaceMaterial : this.roadSurfaceMaterial;
   }
 
   private createRoadSurfaceGeometry(

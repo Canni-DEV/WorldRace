@@ -24,14 +24,16 @@ const postSuccess = (
     buildTimeMs,
   };
 
-  scope.postMessage(response, [
-    payload.surfacePositions.buffer,
-    payload.surfaceUvs.buffer,
-    payload.surfaceIndices.buffer,
+  const transferables: Transferable[] = [];
+  for (const chunk of payload.surfaceChunks) {
+    transferables.push(chunk.positions.buffer, chunk.uvs.buffer, chunk.indices.buffer);
+  }
+  transferables.push(
     payload.collisionPositions.buffer,
     payload.collisionIndices.buffer,
     payload.debugLinePositions.buffer,
-  ]);
+  );
+  scope.postMessage(response, transferables);
 };
 
 const postFailure = (

@@ -16,11 +16,18 @@ export interface RoadMeshStats {
   readonly junctionTriangulationFailures: number;
 }
 
+export type RoadSurfaceKind = 'asphalt' | 'dirt';
+
+export interface RoadSurfaceChunkPayload {
+  readonly kind: RoadSurfaceKind;
+  readonly positions: Float32Array;
+  readonly uvs: Float32Array;
+  readonly indices: Uint32Array;
+}
+
 export interface RoadTileMeshPayload {
   readonly tileKey: string;
-  readonly surfacePositions: Float32Array;
-  readonly surfaceUvs: Float32Array;
-  readonly surfaceIndices: Uint32Array;
+  readonly surfaceChunks: readonly RoadSurfaceChunkPayload[];
   readonly collisionPositions: Float32Array;
   readonly collisionIndices: Uint32Array;
   readonly debugLinePositions: Float32Array;

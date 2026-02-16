@@ -18,6 +18,15 @@ export interface TopologyNode {
   readonly north: number;
 }
 
+export type TopologyEdgeExclusionReason = 'category-excluded' | null;
+
+export interface TopologyEdgeRouting {
+  readonly isRoutable: boolean;
+  readonly weightMultiplier: number;
+  readonly weightedCostMeters: number;
+  readonly exclusionReason: TopologyEdgeExclusionReason;
+}
+
 export interface TopologyEdgeLocal {
   readonly edgeId: string;
   readonly roadId: string;
@@ -26,6 +35,7 @@ export interface TopologyEdgeLocal {
   readonly canonicalPoints: readonly TopologyPointMeters[];
   readonly visualPoints: readonly TopologyPointMeters[];
   readonly properties: RoadProperties;
+  readonly routing: TopologyEdgeRouting;
   readonly lengthMeters: number;
 }
 
@@ -39,6 +49,7 @@ export interface TopologyEdge {
   readonly canonicalPoints: readonly TopologyPointMeters[];
   readonly visualPoints: readonly TopologyPointMeters[];
   readonly properties: RoadProperties;
+  readonly routing: TopologyEdgeRouting;
   readonly lengthMeters: number;
 }
 

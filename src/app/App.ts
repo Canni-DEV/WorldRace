@@ -127,7 +127,9 @@ export class App {
         cacheTtlMs: runtimeConfig.cacheTtlMs,
       },
     );
-    const topologyRegistry = new TopologyRegistry();
+    const topologyRegistry = new TopologyRegistry({
+      routeWeightingProfile: runtimeConfig.routeWeightingProfile,
+    });
     this.tileSystem = new TileSystem(runtimeConfig.tileSizeMeters);
     this.anchor = new Anchor(this.sceneComposer.getCamera().position);
     this.cameraController = new CameraController(

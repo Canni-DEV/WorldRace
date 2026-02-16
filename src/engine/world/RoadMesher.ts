@@ -1,5 +1,10 @@
 import type { TopologyEdge, TopologyPointMeters, TileRoadTopology } from './TopologyTypes';
-import type { RoadMeshStats, RoadTileMeshPayload } from './RoadMeshTypes';
+import type {
+  RoadMeshStats,
+  RoadSurfaceChunkPayload,
+  RoadSurfaceKind,
+  RoadTileMeshPayload,
+} from './RoadMeshTypes';
 
 interface RoadMesherConfig {
   readonly roadHeightMeters: number;
@@ -25,12 +30,19 @@ interface StripBuildResult {
   readonly accumulatedLengths: readonly number[];
 }
 
+interface SurfaceAccumulator {
+  readonly positions: number[];
+  readonly uvs: number[];
+  readonly indices: number[];
+}
+
 interface JunctionBranch {
   readonly nodeId: string;
   readonly nodePoint: TopologyPointMeters;
   readonly direction: TopologyPointMeters;
   readonly angleRad: number;
   readonly halfWidthMeters: number;
+  readonly surfaceKind: RoadSurfaceKind;
   readonly leftPoint: TopologyPointMeters;
   readonly rightPoint: TopologyPointMeters;
 }
@@ -86,9 +98,18 @@ export class RoadMesher {
   }
 
   public buildTileRoadMesh(topology: TileRoadTopology): RoadTileMeshPayload {
-    const surfacePositions: number[] = [];
-    const surfaceUvs: number[] = [];
-    const surfaceIndices: number[] = [];
+    const surfaceByKind: Record<RoadSurfaceKind, SurfaceAccumulator> = {
+      asphalt: {
+        positions: [],
+        uvs: [],
+        indices: [],
+      },
+      dirt: {
+        positions: [],
+        uvs: [],
+        indices: [],
+      },
+    };
     const collisionPositions: number[] = [];
     const collisionIndices: number[] = [];
     const debugLinePositions: number[] = [];
@@ -121,12 +142,14 @@ export class RoadMesher {
       stats.edgeCountMeshed += 1;
       stats.minResolvedWidthMeters = Math.min(stats.minResolvedWidthMeters, resolvedWidth);
       stats.maxResolvedWidthMeters = Math.max(stats.maxResolvedWidthMeters, resolvedWidth);
+      const surfaceKind = this.resolveEdgeSurfaceKind(edge);
+      const surface = surfaceByKind[surfaceKind];
 
       this.appendRibbonSurface(
         visualStrip,
-        surfacePositions,
-        surfaceUvs,
-        surfaceIndices,
+        surface.positions,
+        surface.uvs,
+        surface.indices,
         this.config.roadHeightMeters,
       );
       this.appendRibbonCollision(
@@ -138,19 +161,17 @@ export class RoadMesher {
       this.appendRibbonDebugLines(visualStrip, debugLinePositions, this.config.roadHeightMeters + 0.01);
     }
 
-    const baseSurfaceTriangleCount = Math.floor(surfaceIndices.length / 3);
+    const baseSurfaceTriangleCount = this.computeSurfaceTriangleCount(surfaceByKind);
     this.appendJunctionMeshes(
       topology,
-      surfacePositions,
-      surfaceUvs,
-      surfaceIndices,
+      surfaceByKind,
       collisionPositions,
       collisionIndices,
       debugLinePositions,
       stats,
     );
 
-    stats.triangleCount = Math.floor(surfaceIndices.length / 3);
+    stats.triangleCount = this.computeSurfaceTriangleCount(surfaceByKind);
     stats.collisionTriangleCount = Math.floor(collisionIndices.length / 3);
     stats.junctionTriangles = stats.triangleCount - baseSurfaceTriangleCount;
     if (!Number.isFinite(stats.minResolvedWidthMeters)) {
@@ -159,9 +180,7 @@ export class RoadMesher {
 
     return {
       tileKey: topology.tileKey,
-      surfacePositions: new Float32Array(surfacePositions),
-      surfaceUvs: new Float32Array(surfaceUvs),
-      surfaceIndices: new Uint32Array(surfaceIndices),
+      surfaceChunks: this.buildSurfaceChunks(surfaceByKind),
       collisionPositions: new Float32Array(collisionPositions),
       collisionIndices: new Uint32Array(collisionIndices),
       debugLinePositions: new Float32Array(debugLinePositions),
@@ -181,6 +200,38 @@ export class RoadMesher {
     }
 
     return this.clampWidth(this.getHighwayDefaultWidth(edge.properties.highway));
+  }
+
+  private resolveEdgeSurfaceKind(edge: TopologyEdge): RoadSurfaceKind {
+    return edge.properties.category === 'path' || edge.properties.pavement === 'unpaved'
+      ? 'dirt'
+      : 'asphalt';
+  }
+
+  private computeSurfaceTriangleCount(surfaceByKind: Readonly<Record<RoadSurfaceKind, SurfaceAccumulator>>): number {
+    return Math.floor(
+      (surfaceByKind.asphalt.indices.length + surfaceByKind.dirt.indices.length) / 3,
+    );
+  }
+
+  private buildSurfaceChunks(
+    surfaceByKind: Readonly<Record<RoadSurfaceKind, SurfaceAccumulator>>,
+  ): RoadSurfaceChunkPayload[] {
+    const chunks: RoadSurfaceChunkPayload[] = [];
+    for (const kind of ['asphalt', 'dirt'] as const) {
+      const source = surfaceByKind[kind];
+      if (source.positions.length === 0 || source.indices.length === 0) {
+        continue;
+      }
+
+      chunks.push({
+        kind,
+        positions: new Float32Array(source.positions),
+        uvs: new Float32Array(source.uvs),
+        indices: new Uint32Array(source.indices),
+      });
+    }
+    return chunks;
   }
 
   private clampWidth(widthMeters: number): number {
@@ -384,9 +435,7 @@ export class RoadMesher {
 
   private appendJunctionMeshes(
     topology: TileRoadTopology,
-    surfacePositions: number[],
-    surfaceUvs: number[],
-    surfaceIndices: number[],
+    surfaceByKind: Record<RoadSurfaceKind, SurfaceAccumulator>,
     collisionPositions: number[],
     collisionIndices: number[],
     debugLinePositions: number[],
@@ -400,8 +449,25 @@ export class RoadMesher {
     const branchMap = new Map<string, JunctionBranch[]>();
     for (const edge of topology.edges) {
       const halfWidth = this.resolveRoadWidth(edge) * 0.5;
-      this.appendBranchForEdgeEndpoint(edge, edge.fromNodeId, true, halfWidth, nodePointById, branchMap);
-      this.appendBranchForEdgeEndpoint(edge, edge.toNodeId, false, halfWidth, nodePointById, branchMap);
+      const surfaceKind = this.resolveEdgeSurfaceKind(edge);
+      this.appendBranchForEdgeEndpoint(
+        edge,
+        edge.fromNodeId,
+        true,
+        halfWidth,
+        surfaceKind,
+        nodePointById,
+        branchMap,
+      );
+      this.appendBranchForEdgeEndpoint(
+        edge,
+        edge.toNodeId,
+        false,
+        halfWidth,
+        surfaceKind,
+        nodePointById,
+        branchMap,
+      );
     }
 
     for (const branches of branchMap.values()) {
@@ -451,11 +517,13 @@ export class RoadMesher {
         polygon.reverse();
       }
 
+      const junctionSurfaceKind = this.resolveJunctionSurfaceKind(sortedBranches);
+      const surface = surfaceByKind[junctionSurfaceKind];
       const surfaceTriangles = this.appendJunctionPolygonSurface(
         polygon,
-        surfacePositions,
-        surfaceUvs,
-        surfaceIndices,
+        surface.positions,
+        surface.uvs,
+        surface.indices,
         this.config.roadHeightMeters + this.config.junctionHeightOffsetMeters,
       );
       if (surfaceTriangles <= 0) {
@@ -483,6 +551,7 @@ export class RoadMesher {
     nodeId: string,
     atStart: boolean,
     halfWidthMeters: number,
+    surfaceKind: RoadSurfaceKind,
     nodePointById: ReadonlyMap<string, TopologyPointMeters>,
     branchMap: Map<string, JunctionBranch[]>,
   ): void {
@@ -508,6 +577,7 @@ export class RoadMesher {
       direction,
       angleRad: Math.atan2(direction.north, direction.east),
       halfWidthMeters,
+      surfaceKind,
       leftPoint: {
         east: nodePoint.east + normal.east * halfWidthMeters,
         north: nodePoint.north + normal.north * halfWidthMeters,
@@ -524,6 +594,10 @@ export class RoadMesher {
       return;
     }
     existing.push(branch);
+  }
+
+  private resolveJunctionSurfaceKind(branches: readonly JunctionBranch[]): RoadSurfaceKind {
+    return branches.every((branch) => branch.surfaceKind === 'dirt') ? 'dirt' : 'asphalt';
   }
 
   private extractDirectionFromPolyline(

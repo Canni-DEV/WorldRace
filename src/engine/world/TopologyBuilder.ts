@@ -1,8 +1,13 @@
-import type { RoadFeature, RoadProperties } from '../data/Types';
+import type {
+  RoadFeature,
+  RoadProperties,
+  RouteWeightingProfile,
+} from '../data/Types';
 import type {
   TileRoadTopologyLocal,
   TopologyBuildInput,
   TopologyEdgeLocal,
+  TopologyEdgeRouting,
   TopologyNodeLocal,
   TopologyPointMeters,
 } from './TopologyTypes';
@@ -14,6 +19,7 @@ interface TopologyBuilderConfig {
   readonly smoothingIterations: number;
   readonly intersectionCellSizeMeters: number;
   readonly intersectionEpsilon: number;
+  readonly routeWeightingProfile: RouteWeightingProfile;
 }
 
 interface MutableBuildStats {
@@ -45,6 +51,25 @@ const defaultConfig: TopologyBuilderConfig = {
   smoothingIterations: 1,
   intersectionCellSizeMeters: 32,
   intersectionEpsilon: 1e-5,
+  routeWeightingProfile: {
+    excludedCategories: ['service'],
+    categoryWeightByKind: {
+      street: 1,
+      avenue: 0.95,
+      route: 0.9,
+      highway: 0.88,
+      service: 1.25,
+      path: 1.35,
+      other: 1.1,
+    },
+    pavementWeightByKind: {
+      paved: 0.95,
+      unpaved: 1.3,
+      unknown: 1,
+    },
+    minWeightMultiplier: 0.5,
+    maxWeightMultiplier: 4,
+  },
 };
 
 export class TopologyBuilder {
@@ -58,6 +83,7 @@ export class TopologyBuilder {
       smoothingIterations: config.smoothingIterations ?? defaultConfig.smoothingIterations,
       intersectionCellSizeMeters: config.intersectionCellSizeMeters ?? defaultConfig.intersectionCellSizeMeters,
       intersectionEpsilon: config.intersectionEpsilon ?? defaultConfig.intersectionEpsilon,
+      routeWeightingProfile: config.routeWeightingProfile ?? defaultConfig.routeWeightingProfile,
     };
   }
 
@@ -284,6 +310,7 @@ export class TopologyBuilder {
         const visualPoints = this.config.smoothingEnabled
           ? this.smoothPolyline(canonicalPoints, this.config.smoothingIterations)
           : canonicalPoints;
+        const routing = this.resolveEdgeRouting(road.properties, lengthMeters);
 
         edges.push({
           edgeId: `${tileKey}:edge:${edgeCounter}`,
@@ -293,6 +320,7 @@ export class TopologyBuilder {
           canonicalPoints,
           visualPoints,
           properties: road.properties,
+          routing,
           lengthMeters,
         });
         edgeCounter += 1;
@@ -548,6 +576,30 @@ export class TopologyBuilder {
       .join(';');
     const canonical = forward < reverse ? forward : reverse;
     return `${highway}|${canonical}`;
+  }
+
+  private resolveEdgeRouting(properties: RoadProperties, lengthMeters: number): TopologyEdgeRouting {
+    const profile = this.config.routeWeightingProfile;
+    const isRoutable = !profile.excludedCategories.includes(properties.category);
+    const categoryWeight = profile.categoryWeightByKind[properties.category] ?? 1;
+    const pavementWeight = profile.pavementWeightByKind[properties.pavement] ?? 1;
+    const rawWeightMultiplier = categoryWeight * pavementWeight;
+    const weightMultiplier = this.clampRouteWeightMultiplier(rawWeightMultiplier);
+
+    return {
+      isRoutable,
+      weightMultiplier,
+      weightedCostMeters: lengthMeters * weightMultiplier,
+      exclusionReason: isRoutable ? null : 'category-excluded',
+    };
+  }
+
+  private clampRouteWeightMultiplier(multiplier: number): number {
+    const profile = this.config.routeWeightingProfile;
+    const minMultiplier = Math.max(0.01, profile.minWeightMultiplier);
+    const maxMultiplier = Math.max(minMultiplier, profile.maxWeightMultiplier);
+    const safeMultiplier = Number.isFinite(multiplier) ? multiplier : 1;
+    return Math.max(minMultiplier, Math.min(maxMultiplier, safeMultiplier));
   }
 
   private distance(pointA: TopologyPointMeters, pointB: TopologyPointMeters): number {

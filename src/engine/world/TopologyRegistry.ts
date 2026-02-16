@@ -1,5 +1,5 @@
 import { TopologyBuilder } from './TopologyBuilder';
-import type { TileOSMData } from '../data/Types';
+import type { RouteWeightingProfile, TileOSMData } from '../data/Types';
 import type {
   TileRoadTopology,
   TileRoadTopologyLocal,
@@ -8,12 +8,22 @@ import type {
   TopologyNodeLocal,
 } from './TopologyTypes';
 
+interface TopologyRegistryConfig {
+  readonly routeWeightingProfile: RouteWeightingProfile;
+}
+
 export class TopologyRegistry {
-  private readonly topologyBuilder = new TopologyBuilder();
+  private readonly topologyBuilder: TopologyBuilder;
   private readonly topologyByTileKey = new Map<string, TileRoadTopology>();
   private readonly globalNodeIdByKey = new Map<string, string>();
   private readonly globalNodeRefCount = new Map<string, number>();
   private globalNodeCounter = 0;
+
+  public constructor(config: Partial<TopologyRegistryConfig> = {}) {
+    this.topologyBuilder = new TopologyBuilder({
+      routeWeightingProfile: config.routeWeightingProfile,
+    });
+  }
 
   public upsertTile(tileData: TileOSMData): TileRoadTopology {
     const previous = this.topologyByTileKey.get(tileData.tileKey);
@@ -80,6 +90,7 @@ export class TopologyRegistry {
         canonicalPoints: edge.canonicalPoints,
         visualPoints: edge.visualPoints,
         properties: edge.properties,
+        routing: edge.routing,
         lengthMeters: edge.lengthMeters,
       };
     });

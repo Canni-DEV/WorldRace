@@ -10,8 +10,31 @@ export interface PointMeters {
   readonly north: number;
 }
 
+export type RoadCategory =
+  | 'street'
+  | 'avenue'
+  | 'route'
+  | 'highway'
+  | 'service'
+  | 'path'
+  | 'other';
+
+export type RoadPavementKind = 'paved' | 'unpaved' | 'unknown';
+
+export interface RouteWeightingProfile {
+  readonly excludedCategories: readonly RoadCategory[];
+  readonly categoryWeightByKind: Readonly<Record<RoadCategory, number>>;
+  readonly pavementWeightByKind: Readonly<Record<RoadPavementKind, number>>;
+  readonly minWeightMultiplier: number;
+  readonly maxWeightMultiplier: number;
+}
+
 export interface RoadProperties {
   readonly highway: string;
+  readonly category: RoadCategory;
+  readonly surface: string | null;
+  readonly tracktype: string | null;
+  readonly pavement: RoadPavementKind;
   readonly widthMeters: number | null;
   readonly lanes: number | null;
   readonly oneway: boolean | null;
